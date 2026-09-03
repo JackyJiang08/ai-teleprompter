@@ -228,6 +228,136 @@ fn save_config(cfg: &Config) {
     }
 }
 
+// ── First-launch migration from the previous app identity ──
+// The 2.0 rename changed the bundle identifier from
+// com.jackyjiang.bilingual-teleprompter to com.jackyjiang.ai-teleprompter, so
+// macOS treats this as a brand-new app. The script library and settings live
+// in identifier-independent dotfiles (~/.teleprompter-*.json) and carry over
+// on their own; anything under the old identifier's Application Support
+// directory is copied — never moved or deleted — into the new one, exactly
+// once (guarded by a marker file in the new directory). Keychain items and
+// TCC permissions (microphone, speech recognition) cannot cross an identity
+// change, so when a previous install is detected a one-time notice tells the
+// user to re-enter the API key and re-grant the permissions.
+
+const OLD_BUNDLE_ID: &str = "com.jackyjiang.bilingual-teleprompter";
+const NEW_BUNDLE_ID: &str = "com.jackyjiang.ai-teleprompter";
+const OLD_LM_CACHE_DIR: &str = "bilingual-teleprompter-lm";
+const MIGRATION_MARKER: &str = "migrated-from-previous-identity.json";
+
+#[derive(Debug, Default, PartialEq)]
+pub struct MigrationOutcome {
+    pub performed: bool,      // this call did the (one-time) migration work
+    pub notice_pending: bool, // a previous install was found — show the notice
+    pub files_copied: u64,
+}
+
+// Recursively copy src into dst without ever overwriting an existing
+// destination file and without touching the source. Returns files copied.
+fn copy_tree_no_overwrite(src: &PathBuf, dst: &PathBuf) -> std::io::Result<u64> {
+    let mut copied = 0;
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copied += copy_tree_no_overwrite(&from, &to)?;
+        } else if ty.is_file() && !to.exists() {
+            fs::copy(&from, &to)?;
+            copied += 1;
+        }
+    }
+    Ok(copied)
+}
+
+fn run_identity_migration(
+    old_dir: &PathBuf,
+    new_dir: &PathBuf,
+    extra_footprints: &[PathBuf],
+) -> MigrationOutcome {
+    let marker = new_dir.join(MIGRATION_MARKER);
+    if marker.exists() {
+        return MigrationOutcome::default();
+    }
+
+    let files_copied = if old_dir.is_dir() {
+        copy_tree_no_overwrite(old_dir, new_dir).unwrap_or_else(|e| {
+            eprintln!("[migrate] copy failed: {e}");
+            0
+        })
+    } else {
+        0
+    };
+
+    let previous_install = old_dir.is_dir() || extra_footprints.iter().any(|p| p.exists());
+
+    // Write the marker before the notice is shown, so a launch killed
+    // mid-notice never repeats the migration or the notice.
+    if fs::create_dir_all(new_dir).is_ok() {
+        let record = serde_json::json!({
+            "migratedFrom": OLD_BUNDLE_ID,
+            "filesCopied": files_copied,
+            "previousInstallDetected": previous_install,
+        });
+        let _ = fs::write(&marker, serde_json::to_string_pretty(&record).unwrap_or_default());
+    }
+
+    MigrationOutcome { performed: true, notice_pending: previous_install, files_copied }
+}
+
+// Runs the migration against the real user directories. Returns whether the
+// one-time notice should be shown this launch.
+fn migrate_previous_identity() -> bool {
+    let Some(home) = dirs::home_dir() else { return false };
+    let app_support = home.join("Library/Application Support");
+    let caches = home.join("Library/Caches");
+    let outcome = run_identity_migration(
+        &app_support.join(OLD_BUNDLE_ID),
+        &app_support.join(NEW_BUNDLE_ID),
+        &[
+            caches.join(OLD_BUNDLE_ID),
+            caches.join(OLD_LM_CACHE_DIR),
+            home.join("Library/WebKit").join(OLD_BUNDLE_ID),
+        ],
+    );
+    if outcome.performed {
+        eprintln!(
+            "[migrate] first launch under {NEW_BUNDLE_ID}: {} file(s) copied, previous install: {}",
+            outcome.files_copied, outcome.notice_pending
+        );
+    }
+    outcome.notice_pending
+}
+
+// One-time native notice after a detected identity migration.
+#[cfg(target_os = "macos")]
+fn show_migration_notice() {
+    unsafe {
+        let mtm = objc2::MainThreadMarker::new_unchecked();
+        let alert = objc2_app_kit::NSAlert::new(mtm);
+        alert.setMessageText(&objc2_foundation::NSString::from_str(
+            "Welcome to AI Teleprompter 2.0",
+        ));
+        alert.setInformativeText(&objc2_foundation::NSString::from_str(
+            "This app replaces the previous \"Bilingual AI Teleprompter\" install. \
+             Your script library and settings have carried over automatically.\n\n\
+             Two things macOS cannot carry across the rename:\n\n\
+             \u{2022} The AI provider API key — re-enter it in Settings → Prepare \
+             with AI (it is stored only in the macOS Keychain).\n\n\
+             \u{2022} Microphone and Speech Recognition permissions — macOS will \
+             ask for them again the first time you start reading.",
+        ));
+        eprintln!("[migrate] showing one-time migration notice");
+        alert.runModal();
+        eprintln!("[migrate] migration notice dismissed");
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn show_migration_notice() {}
+
 fn default_scripts() -> Vec<Script> {
     let about_me_content = serde_json::json!({
         "type": "doc",
@@ -1089,6 +1219,9 @@ fn toggle_settings(app: &AppHandle) {
 
 pub fn run() {
     eprintln!("[OT] starting up");
+    // One-time copy of the previous bundle identity's app-support data; must
+    // run before anything else touches the new identity's directories.
+    let migration_notice_pending = migrate_previous_identity();
     let config = load_config();
     let state  = AppState {
         config:        Mutex::new(config),
@@ -1295,12 +1428,145 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("error while running tauri application")
-        .run(|app, event| {
-            // Make sure the speech sidecar never outlives the app
-            if let tauri::RunEvent::Exit = event {
-                if let Some(st) = app.try_state::<AppState>() {
-                    kill_speech_child(&st);
+        .run(move |app, event| {
+            match event {
+                // Post-migration notice: shown once the event loop is up (the
+                // pill window already exists), on the main thread as NSAlert
+                // requires. RunEvent::Ready fires exactly once per launch, and
+                // the migration marker keeps it to one launch ever.
+                tauri::RunEvent::Ready => {
+                    if migration_notice_pending {
+                        show_migration_notice();
+                    }
                 }
+                // Make sure the speech sidecar never outlives the app
+                tauri::RunEvent::Exit => {
+                    if let Some(st) = app.try_state::<AppState>() {
+                        kill_speech_child(&st);
+                    }
+                }
+                _ => {}
             }
         });
+}
+
+// ── Tests ──────────────────────────────────────────────────
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    // Fixture directories under the OS temp dir, unique per test so the
+    // suite can run in parallel. Layout mirrors the real one: an "old"
+    // app-support dir, a "new" one, and optional extra footprint dirs.
+    struct Fixture {
+        root: PathBuf,
+    }
+
+    impl Fixture {
+        fn new(tag: &str) -> Self {
+            let root = std::env::temp_dir()
+                .join(format!("ai-teleprompter-migration-{tag}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).unwrap();
+            Fixture { root }
+        }
+        fn old_dir(&self) -> PathBuf { self.root.join("old-identity") }
+        fn new_dir(&self) -> PathBuf { self.root.join("new-identity") }
+        fn write(&self, rel: &str, contents: &str) {
+            let path = self.root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
+        fn read(&self, rel: &str) -> String {
+            fs::read_to_string(self.root.join(rel)).unwrap()
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn copies_the_old_tree_including_nested_dirs_and_keeps_the_old_data() {
+        let fx = Fixture::new("copy");
+        fx.write("old-identity/library.json", "{\"scripts\":1}");
+        fx.write("old-identity/nested/deep/settings.json", "{\"theme\":\"dark\"}");
+
+        let outcome = run_identity_migration(&fx.old_dir(), &fx.new_dir(), &[]);
+
+        assert!(outcome.performed);
+        assert!(outcome.notice_pending);
+        assert_eq!(outcome.files_copied, 2);
+        assert_eq!(fx.read("new-identity/library.json"), "{\"scripts\":1}");
+        assert_eq!(fx.read("new-identity/nested/deep/settings.json"), "{\"theme\":\"dark\"}");
+        // Source is copied, never moved or deleted
+        assert_eq!(fx.read("old-identity/library.json"), "{\"scripts\":1}");
+        assert_eq!(fx.read("old-identity/nested/deep/settings.json"), "{\"theme\":\"dark\"}");
+        assert!(fx.new_dir().join(MIGRATION_MARKER).exists());
+    }
+
+    #[test]
+    fn never_overwrites_files_already_present_in_the_new_directory() {
+        let fx = Fixture::new("no-overwrite");
+        fx.write("old-identity/library.json", "old contents");
+        fx.write("new-identity/library.json", "new contents");
+
+        let outcome = run_identity_migration(&fx.old_dir(), &fx.new_dir(), &[]);
+
+        assert!(outcome.performed);
+        assert_eq!(outcome.files_copied, 0);
+        assert_eq!(fx.read("new-identity/library.json"), "new contents");
+    }
+
+    #[test]
+    fn is_idempotent_on_a_second_launch() {
+        let fx = Fixture::new("idempotent");
+        fx.write("old-identity/library.json", "v1");
+
+        let first = run_identity_migration(&fx.old_dir(), &fx.new_dir(), &[]);
+        assert!(first.performed);
+
+        // A file that appears in the old dir later must NOT be picked up —
+        // the migration is one-time, keyed on the marker.
+        fx.write("old-identity/late-arrival.json", "nope");
+        let second = run_identity_migration(&fx.old_dir(), &fx.new_dir(), &[]);
+
+        assert_eq!(second, MigrationOutcome::default());
+        assert!(!fx.new_dir().join("late-arrival.json").exists());
+    }
+
+    #[test]
+    fn fresh_install_writes_the_marker_but_shows_no_notice() {
+        let fx = Fixture::new("fresh");
+
+        let outcome = run_identity_migration(&fx.old_dir(), &fx.new_dir(), &[]);
+
+        assert!(outcome.performed);
+        assert!(!outcome.notice_pending);
+        assert_eq!(outcome.files_copied, 0);
+        assert!(fx.new_dir().join(MIGRATION_MARKER).exists());
+
+        // ...and the marker suppresses everything on the next launch.
+        let second = run_identity_migration(&fx.old_dir(), &fx.new_dir(), &[]);
+        assert_eq!(second, MigrationOutcome::default());
+    }
+
+    #[test]
+    fn footprint_dirs_alone_trigger_the_notice_without_copying() {
+        let fx = Fixture::new("footprint");
+        fx.write("caches/old-identity-cache/blob.bin", "cache");
+
+        let outcome = run_identity_migration(
+            &fx.old_dir(),
+            &fx.new_dir(),
+            &[fx.root.join("caches/old-identity-cache")],
+        );
+
+        assert!(outcome.performed);
+        assert!(outcome.notice_pending);
+        assert_eq!(outcome.files_copied, 0);
+    }
 }
