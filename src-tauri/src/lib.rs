@@ -155,11 +155,14 @@ pub struct Config {
     #[serde(default)]
     pub tracking_hints: String,
     #[serde(default)]
-    pub ai_provider: String, // "" (off) | "anthropic" | "local"
+    pub ai_provider: String, // "" (off) | "claude-code" | "codex" | "anthropic-api" | "ollama"
     #[serde(default)]
-    pub ai_model: String,
+    pub ai_model: String, // legacy pre-2.1 single model field (ai_prefs supersedes it)
     #[serde(default = "default_ai_local_url")]
     pub ai_local_url: String,
+    // Per-provider model/effort choices: { "<provider>": {"model": "...", "effort": "..."} }
+    #[serde(default)]
+    pub ai_prefs: serde_json::Value,
 }
 
 fn default_word_tracking() -> bool { true }
@@ -187,6 +190,7 @@ impl Default for Config {
             ai_provider: String::new(),
             ai_model: String::new(),
             ai_local_url: default_ai_local_url(),
+            ai_prefs: serde_json::json!({}),
         }
     }
 }
@@ -207,6 +211,9 @@ pub struct AppState {
     speech_child:  Mutex<Option<tauri_plugin_shell::process::CommandChild>>,
     speech_status: Mutex<serde_json::Value>,
     speech_notice: Mutex<String>,
+    // The currently running provider CLI (claude/codex) for Prepare with AI,
+    // so it can be cancelled and never outlives the app.
+    cli_child:     std::sync::Arc<Mutex<Option<std::process::Child>>>,
 }
 
 // ── File paths ─────────────────────────────────────────────
@@ -218,10 +225,18 @@ fn scripts_path() -> PathBuf {
     dirs::home_dir().unwrap_or_default().join(".teleprompter-scripts.json")
 }
 fn load_config() -> Config {
-    fs::read_to_string(config_path())
+    let mut cfg: Config = fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Pre-2.1 provider names: "anthropic" and "local" became "anthropic-api"
+    // and "ollama" when the subscription providers were added.
+    match cfg.ai_provider.as_str() {
+        "anthropic" => cfg.ai_provider = "anthropic-api".to_string(),
+        "local" => cfg.ai_provider = "ollama".to_string(),
+        _ => {}
+    }
+    cfg
 }
 fn save_config(cfg: &Config) {
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
@@ -521,6 +536,7 @@ fn set_config(app: AppHandle, state: State<AppState>, patch: serde_json::Value) 
     if let Some(v) = patch.get("aiProvider").and_then(|v| v.as_str()) { cfg.ai_provider = v.to_string(); }
     if let Some(v) = patch.get("aiModel").and_then(|v| v.as_str()) { cfg.ai_model = v.to_string(); }
     if let Some(v) = patch.get("aiLocalUrl").and_then(|v| v.as_str()) { cfg.ai_local_url = v.to_string(); }
+    if let Some(v) = patch.get("aiPrefs") { if v.is_object() { cfg.ai_prefs = v.clone(); } }
 
     let cfg_clone = cfg.clone();
     save_config(&cfg_clone);
@@ -891,6 +907,489 @@ fn save_tracking_fixture(json: String) -> Result<String, String> {
     Err("recording is available in dev builds only".to_string())
 }
 
+// ── Subscription provider CLIs (Prepare with AI) ───────────
+// The claude-code and codex providers delegate to the official CLIs the user
+// has already installed and logged into (`claude -p`, `codex exec`). The app
+// never reads, copies, or proxies any OAuth token or credential file, and
+// never talks to the vendors' subscription endpoints itself — the CLI owns
+// authentication end to end. Rationale in docs/ARCHITECTURE.md §4.4a.
+//
+// The CLIs are spawned from Rust only (std::process); they are never exposed
+// to the WebView through the shell plugin, so no shell-scope capability
+// entries exist for them — strictly tighter than scoping plugin execution.
+
+const CLI_DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+// Extra directories searched besides PATH: GUI apps launched from Finder get
+// a minimal PATH, so the common install locations are checked explicitly.
+fn cli_extra_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+    ];
+    if let Some(home) = dirs::home_dir() {
+        dirs.insert(0, home.join(".local/bin"));
+        dirs.insert(1, home.join(".claude/local/bin"));
+        dirs.insert(2, home.join(".claude/local"));
+        dirs.push(home.join(".npm-global/bin"));
+        dirs.push(home.join("bin"));
+    }
+    dirs
+}
+
+fn find_cli_in(name: &str, extra_dirs: &[PathBuf], search_path: bool) -> Option<PathBuf> {
+    let is_exec = |p: &PathBuf| {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
+    };
+    if search_path {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                let cand = dir.join(name);
+                if is_exec(&cand) { return Some(cand); }
+            }
+        }
+    }
+    for dir in extra_dirs {
+        let cand = dir.join(name);
+        if is_exec(&cand) { return Some(cand); }
+    }
+    None
+}
+
+fn find_cli(name: &str) -> Option<PathBuf> {
+    find_cli_in(name, &cli_extra_dirs(), true)
+}
+
+// Kill a CLI child and everything it spawned (it leads its own process
+// group), then reap it — no zombies, no orphans holding pipes open.
+fn kill_child_tree(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-KILL", &format!("-{}", child.id())])
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+struct CliOutput {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+// Spawn a CLI, feed `stdin_data`, and collect output with a hard timeout.
+// The child is parked in `slot` (when given) so cancel_ai_cli / app exit can
+// kill it; on timeout it is killed and reaped — no zombies either way.
+fn run_cli_capture(
+    mut cmd: std::process::Command,
+    stdin_data: &str,
+    timeout: std::time::Duration,
+    slot: Option<&Mutex<Option<std::process::Child>>>,
+) -> Result<CliOutput, String> {
+    use std::io::{Read, Write};
+    use std::process::Stdio;
+
+    cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    // New process group: killing on cancel/timeout signals the whole tree,
+    // so helpers the CLI forks can't linger or hold the output pipes open.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("cli_failed:could not start: {e}"))?;
+
+    let mut stdin = child.stdin.take();
+    let mut stdout = child.stdout.take();
+    let mut stderr = child.stderr.take();
+    let data = stdin_data.to_string();
+    let w = std::thread::spawn(move || {
+        if let Some(ref mut pipe) = stdin {
+            let _ = pipe.write_all(data.as_bytes());
+        }
+        // dropping stdin closes the pipe so the CLI sees EOF
+    });
+    let out_reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut pipe) = stdout { let _ = pipe.read_to_string(&mut buf); }
+        buf
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut pipe) = stderr { let _ = pipe.read_to_string(&mut buf); }
+        buf
+    });
+
+    // Park the child where cancellation can reach it, then poll.
+    match slot {
+        Some(slot_ref) => {
+            *slot_ref.lock().unwrap() = Some(child);
+            finish_cli_shared(slot_ref, w, out_reader, err_reader, timeout)
+        }
+        // Local slot so the polling below is uniform.
+        None => finish_cli(Mutex::new(Some(child)), w, out_reader, err_reader, timeout),
+    }
+}
+
+fn finish_cli(
+    slot: Mutex<Option<std::process::Child>>,
+    w: std::thread::JoinHandle<()>,
+    out_reader: std::thread::JoinHandle<String>,
+    err_reader: std::thread::JoinHandle<String>,
+    timeout: std::time::Duration,
+) -> Result<CliOutput, String> {
+    finish_cli_shared(&slot, w, out_reader, err_reader, timeout)
+}
+
+fn finish_cli_shared(
+    slot: &Mutex<Option<std::process::Child>>,
+    w: std::thread::JoinHandle<()>,
+    out_reader: std::thread::JoinHandle<String>,
+    err_reader: std::thread::JoinHandle<String>,
+    timeout: std::time::Duration,
+) -> Result<CliOutput, String> {
+    let started = std::time::Instant::now();
+    let code = loop {
+        {
+            let mut guard = slot.lock().unwrap();
+            match guard.as_mut() {
+                None => break None, // cancelled: cancel_ai_cli killed and took it
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => {
+                        guard.take();
+                        break Some(status.code());
+                    }
+                    Ok(None) => {}
+                    Err(e) => {
+                        kill_child_tree(child);
+                        guard.take();
+                        return Err(format!("cli_failed:wait error: {e}"));
+                    }
+                },
+            }
+            if started.elapsed() >= timeout {
+                if let Some(mut child) = guard.take() {
+                    kill_child_tree(&mut child);
+                }
+                let _ = w.join();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(format!(
+                    "timeout:The provider CLI did not answer within {}s",
+                    timeout.as_secs()
+                ));
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    };
+    let _ = w.join();
+    let stdout = out_reader.join().unwrap_or_default();
+    let stderr = err_reader.join().unwrap_or_default();
+    match code {
+        None => Err("canceled:Prepare was cancelled".to_string()),
+        Some(code) => Ok(CliOutput { code, stdout, stderr }),
+    }
+}
+
+// Argument builders — pure, unit-tested. Flags verified against
+// claude 2.1.259 and codex-cli 0.153.0 (docs/ARCHITECTURE.md §4.4a):
+// tools/customizations off, nothing persisted, machine-readable output.
+fn claude_prepare_args(system: &str, model: &str, effort: &str) -> Vec<String> {
+    let mut args = vec![
+        "-p".into(),
+        "--output-format".into(), "json".into(),
+        "--safe-mode".into(),               // no hooks/plugins/MCP/CLAUDE.md
+        "--tools".into(), "".into(),        // no built-in tools at all
+        "--no-session-persistence".into(),
+        "--system-prompt".into(), system.into(),
+    ];
+    if !model.is_empty() {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    if !effort.is_empty() {
+        args.push("--effort".into());
+        args.push(effort.into());
+    }
+    args
+}
+
+fn codex_prepare_args(workdir: &str, outfile: &str, model: &str, effort: &str) -> Vec<String> {
+    let mut args = vec![
+        "exec".into(),
+        "--sandbox".into(), "read-only".into(), // model-run commands can't write
+        "--skip-git-repo-check".into(),
+        "--ephemeral".into(),                   // no session files on disk
+        "--color".into(), "never".into(),
+        "-C".into(), workdir.into(),
+        "--output-last-message".into(), outfile.into(),
+    ];
+    if !model.is_empty() {
+        args.push("--model".into());
+        args.push(model.into());
+    }
+    if !effort.is_empty() {
+        args.push("-c".into());
+        args.push(format!("model_reasoning_effort=\"{effort}\""));
+    }
+    args
+}
+
+// Map a failed CLI run to a "code:detail" error, surfacing the CLI's own
+// message for rate limits / usage caps / auth problems.
+fn map_cli_failure(kind: &str, code: Option<i32>, stdout: &str, stderr: &str) -> String {
+    let combined = format!("{stdout}\n{stderr}").to_lowercase();
+    let detail = {
+        let s = stderr.trim();
+        let line = s.lines().rev().find(|l| !l.trim().is_empty())
+            .or_else(|| stdout.trim().lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("the CLI reported no error message");
+        line.trim().chars().take(300).collect::<String>()
+    };
+    if ["rate limit", "usage limit", "quota", "out of credit", "usage cap", "limit reached", "too many requests"]
+        .iter().any(|m| combined.contains(m))
+    {
+        return format!("cli_rate_limit:{detail}");
+    }
+    if ["not logged in", "login required", "please log in", "please run codex login",
+        "please sign in", "authentication", "unauthorized", "oauth"]
+        .iter().any(|m| combined.contains(m))
+    {
+        return format!("cli_not_logged_in:{detail}");
+    }
+    format!("cli_failed:{kind} exited with {} — {detail}", code.map_or("signal".into(), |c| c.to_string()))
+}
+
+fn parse_claude_result(stdout: &str) -> Result<String, String> {
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .map_err(|_| "parse:the Claude CLI returned unexpected output".to_string())?;
+    let is_error = v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false);
+    let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+    let result = v.get("result").and_then(|r| r.as_str()).unwrap_or("");
+    if is_error || subtype != "success" {
+        let detail = if result.is_empty() { subtype } else { result };
+        let lower = detail.to_lowercase();
+        if lower.contains("limit") || lower.contains("quota") {
+            return Err(format!("cli_rate_limit:{}", detail.chars().take(300).collect::<String>()));
+        }
+        return Err(format!("cli_failed:{}", detail.chars().take(300).collect::<String>()));
+    }
+    if result.trim().is_empty() {
+        return Err("parse:empty response".to_string());
+    }
+    Ok(result.to_string())
+}
+
+// Detection: binary presence via PATH + known install dirs, login state via
+// each CLI's own status mechanism — `claude auth status` (JSON, loggedIn) and
+// `codex login status` (exit code + message). Neither consumes plan usage.
+fn detect_cli_at(kind: &str, bin: &PathBuf) -> serde_json::Value {
+    let timeout = std::time::Duration::from_secs(15);
+    let version = {
+        let mut c = std::process::Command::new(bin);
+        c.arg("--version");
+        run_cli_capture(c, "", timeout, None)
+            .ok()
+            .map(|o| o.stdout.trim().to_string())
+            .unwrap_or_default()
+    };
+    let path_str = bin.to_string_lossy().to_string();
+    match kind {
+        "claude-code" => {
+            let mut c = std::process::Command::new(bin);
+            c.args(["auth", "status"]);
+            match run_cli_capture(c, "", timeout, None) {
+                Ok(o) => {
+                    let logged_in = serde_json::from_str::<serde_json::Value>(o.stdout.trim())
+                        .ok()
+                        .and_then(|v| v.get("loggedIn").and_then(|b| b.as_bool()))
+                        .unwrap_or(false);
+                    if o.code == Some(0) && logged_in {
+                        serde_json::json!({ "state": "available", "path": path_str, "version": version })
+                    } else {
+                        serde_json::json!({ "state": "not_logged_in", "path": path_str, "version": version,
+                                            "detail": o.stdout.trim().chars().take(300).collect::<String>() })
+                    }
+                }
+                Err(e) => serde_json::json!({ "state": "not_logged_in", "path": path_str, "version": version, "detail": e }),
+            }
+        }
+        "codex" => {
+            let mut c = std::process::Command::new(bin);
+            c.args(["login", "status"]);
+            match run_cli_capture(c, "", timeout, None) {
+                Ok(o) => {
+                    let msg = format!("{} {}", o.stdout.trim(), o.stderr.trim());
+                    if o.code == Some(0) && msg.to_lowercase().contains("logged in") {
+                        serde_json::json!({ "state": "available", "path": path_str, "version": version })
+                    } else {
+                        serde_json::json!({ "state": "not_logged_in", "path": path_str, "version": version,
+                                            "detail": msg.trim().chars().take(300).collect::<String>() })
+                    }
+                }
+                Err(e) => serde_json::json!({ "state": "not_logged_in", "path": path_str, "version": version, "detail": e }),
+            }
+        }
+        _ => serde_json::json!({ "state": "error", "detail": "unknown cli" }),
+    }
+}
+
+#[tauri::command]
+async fn detect_ai_provider(app: AppHandle, provider: String) -> serde_json::Value {
+    match provider.as_str() {
+        "claude-code" | "codex" => {
+            let bin_name = if provider == "claude-code" { "claude" } else { "codex" };
+            match find_cli(bin_name) {
+                None => serde_json::json!({ "state": "not_installed" }),
+                Some(bin) => {
+                    let kind = provider.clone();
+                    tauri::async_runtime::spawn_blocking(move || detect_cli_at(&kind, &bin))
+                        .await
+                        .unwrap_or_else(|e| serde_json::json!({ "state": "error", "detail": e.to_string() }))
+                }
+            }
+        }
+        "anthropic-api" => {
+            let has_key = keyring_entry()
+                .ok()
+                .and_then(|e| e.get_password().ok())
+                .map(|k| !k.is_empty())
+                .unwrap_or(false);
+            serde_json::json!({ "state": if has_key { "available" } else { "not_configured" } })
+        }
+        "ollama" => {
+            let url = {
+                let state = app.state::<AppState>();
+                let cfg = state.config.lock().unwrap();
+                cfg.ai_local_url.clone()
+            };
+            let probe = format!("{}/v1/models", url.trim_end_matches('/'));
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build();
+            match client {
+                Ok(c) => match c.get(&probe).send().await {
+                    Ok(resp) if resp.status().is_success() =>
+                        serde_json::json!({ "state": "available" }),
+                    _ => serde_json::json!({ "state": "not_running" }),
+                },
+                Err(_) => serde_json::json!({ "state": "not_running" }),
+            }
+        }
+        _ => serde_json::json!({ "state": "error", "detail": "unknown provider" }),
+    }
+}
+
+#[tauri::command]
+async fn ai_cli_prepare(
+    app: AppHandle,
+    provider: String,
+    system: String,
+    prompt: String,
+    model: Option<String>,
+    effort: Option<String>,
+    timeout_secs: Option<u64>,
+) -> Result<String, String> {
+    let bin_name = match provider.as_str() {
+        "claude-code" => "claude",
+        "codex" => "codex",
+        _ => return Err("no_provider:Unknown CLI provider".to_string()),
+    };
+    // Re-resolved on every call, so a CLI uninstalled mid-session surfaces
+    // as a clean setup error instead of a spawn failure.
+    let bin = find_cli(bin_name)
+        .ok_or_else(|| format!("cli_not_installed:{bin_name} is not installed"))?;
+    let model = model.unwrap_or_default();
+    let effort = effort.unwrap_or_default();
+    let timeout = std::time::Duration::from_secs(timeout_secs.unwrap_or(CLI_DEFAULT_TIMEOUT_SECS));
+
+    // Fresh empty working directory per run: the CLI sees no user files, and
+    // anything it drops there is deleted afterwards.
+    let workdir = std::env::temp_dir().join(format!(
+        "ai-teleprompter-cli-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    ));
+    fs::create_dir_all(&workdir).map_err(|e| format!("cli_failed:tempdir: {e}"))?;
+
+    let slot = app.state::<AppState>().cli_child.clone();
+    let workdir_in = workdir.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        run_provider_cli(&provider, &bin, &workdir_in, &system, &prompt, &model, &effort, timeout, &slot)
+    })
+    .await
+    .map_err(|e| format!("cli_failed:{e}"))?;
+
+    let _ = fs::remove_dir_all(&workdir);
+    result
+}
+
+// The blocking core of ai_cli_prepare, factored out so the fake-CLI tests
+// can exercise it directly.
+#[allow(clippy::too_many_arguments)]
+fn run_provider_cli(
+    provider: &str,
+    bin: &PathBuf,
+    workdir: &PathBuf,
+    system: &str,
+    prompt: &str,
+    model: &str,
+    effort: &str,
+    timeout: std::time::Duration,
+    slot: &Mutex<Option<std::process::Child>>,
+) -> Result<String, String> {
+    match provider {
+        "claude-code" => {
+            let mut cmd = std::process::Command::new(bin);
+            cmd.args(claude_prepare_args(system, model, effort));
+            cmd.current_dir(workdir);
+            let out = run_cli_capture(cmd, prompt, timeout, Some(slot))?;
+            if out.code != Some(0) {
+                // A failed run may still carry a JSON error body on stdout.
+                if let Err(mapped) = parse_claude_result(&out.stdout) {
+                    if !mapped.starts_with("parse:") { return Err(mapped); }
+                }
+                return Err(map_cli_failure("claude", out.code, &out.stdout, &out.stderr));
+            }
+            parse_claude_result(&out.stdout)
+        }
+        "codex" => {
+            let outfile = workdir.join("last-message.txt");
+            let mut cmd = std::process::Command::new(bin);
+            cmd.args(codex_prepare_args(
+                &workdir.to_string_lossy(),
+                &outfile.to_string_lossy(),
+                model,
+                effort,
+            ));
+            cmd.current_dir(workdir);
+            // Codex has no separate system-prompt channel in exec mode —
+            // the instructions ride at the top of the prompt.
+            let combined = format!("{system}\n\n{prompt}");
+            let out = run_cli_capture(cmd, &combined, timeout, Some(slot))?;
+            if out.code != Some(0) {
+                return Err(map_cli_failure("codex", out.code, &out.stdout, &out.stderr));
+            }
+            let text = fs::read_to_string(&outfile).unwrap_or_default();
+            if text.trim().is_empty() {
+                return Err("parse:the Codex CLI returned no output".to_string());
+            }
+            Ok(text)
+        }
+        _ => Err("no_provider:Unknown CLI provider".to_string()),
+    }
+}
+
+#[tauri::command]
+fn cancel_ai_cli(state: State<AppState>) {
+    if let Some(mut child) = state.cli_child.lock().unwrap().take() {
+        kill_child_tree(&mut child);
+    }
+}
+
 // ── AI provider proxy (Prepare with AI) ────────────────────
 // The frontend builds prompts and parses responses (src/lib/ai.js); this side
 // is a dumb transport that owns the secrets: the Anthropic API key lives in
@@ -946,13 +1445,21 @@ fn map_http_error(status: u16, retry_after: &str, v: &serde_json::Value) -> Stri
 }
 
 #[tauri::command]
-async fn ai_complete(app: AppHandle, system: String, prompt: String) -> Result<String, String> {
+async fn ai_complete(
+    app: AppHandle,
+    system: String,
+    prompt: String,
+    model: Option<String>,
+    effort: Option<String>,
+) -> Result<String, String> {
     // Snapshot config before any await — the Mutex guard must not cross it
-    let (provider, model, local_url) = {
+    let (provider, cfg_model, local_url) = {
         let state = app.state::<AppState>();
         let cfg = state.config.lock().unwrap();
         (cfg.ai_provider.clone(), cfg.ai_model.clone(), cfg.ai_local_url.clone())
     };
+    let model = model.filter(|m| !m.is_empty()).unwrap_or(cfg_model);
+    let effort = effort.filter(|e| !e.is_empty());
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -960,12 +1467,12 @@ async fn ai_complete(app: AppHandle, system: String, prompt: String) -> Result<S
         .map_err(|e| format!("network:{e}"))?;
 
     match provider.as_str() {
-        "anthropic" => {
+        "anthropic" | "anthropic-api" => {
             let key = keyring_entry()?
                 .get_password()
                 .map_err(|_| "no_api_key:No API key saved".to_string())?;
             let model = if model.is_empty() { "claude-opus-5".to_string() } else { model };
-            let body = serde_json::json!({
+            let mut body = serde_json::json!({
                 "model": model,
                 "max_tokens": 8192,
                 "system": system,
@@ -974,6 +1481,11 @@ async fn ai_complete(app: AppHandle, system: String, prompt: String) -> Result<S
                 "fallbacks": "default",
                 "messages": [{ "role": "user", "content": prompt }],
             });
+            // Effort is GA inside output_config on models that support it
+            // (low|medium|high|xhigh); the frontend gates per model.
+            if let Some(e) = effort {
+                body["output_config"] = serde_json::json!({ "effort": e });
+            }
             let resp = client
                 .post("https://api.anthropic.com/v1/messages")
                 .header("x-api-key", key)
@@ -1013,7 +1525,7 @@ async fn ai_complete(app: AppHandle, system: String, prompt: String) -> Result<S
                 })
                 .ok_or_else(|| "parse:empty response".to_string())
         }
-        "local" => {
+        "local" | "ollama" => {
             if model.is_empty() {
                 return Err("no_model:Set a model name in Settings".to_string());
             }
@@ -1082,7 +1594,7 @@ async fn ai_test(cfg: serde_json::Value) -> Result<(), String> {
     }
 
     match provider.as_str() {
-        "anthropic" => {
+        "anthropic" | "anthropic-api" => {
             let key = if key.is_empty() {
                 keyring_entry()?.get_password().map_err(|_| "no_api_key:No API key saved".to_string())?
             } else { key };
@@ -1102,7 +1614,7 @@ async fn ai_test(cfg: serde_json::Value) -> Result<(), String> {
                 .map_err(|e| format!("network:{e}"))?;
             check(resp).await
         }
-        "local" => {
+        "local" | "ollama" => {
             if model.is_empty() {
                 return Err("no_model:Enter a model name (e.g. llama3.1)".to_string());
             }
@@ -1273,6 +1785,7 @@ pub fn run() {
         speech_child:  Mutex::new(None),
         speech_status: Mutex::new(serde_json::json!({ "type": "stopped" })),
         speech_notice: Mutex::new(String::new()),
+        cli_child:     std::sync::Arc::new(Mutex::new(None)),
     };
 
     tauri::Builder::default()
@@ -1294,6 +1807,7 @@ pub fn run() {
             start_speech, stop_speech, get_speech_status,
             set_speech_notice, get_speech_notice, save_tracking_fixture,
             ai_complete, ai_test, set_ai_key, has_ai_key,
+            detect_ai_provider, ai_cli_prepare, cancel_ai_cli,
         ])
         .setup(|app| {
             let app_handle = app.handle().clone();
@@ -1487,6 +2001,9 @@ pub fn run() {
                 tauri::RunEvent::Exit => {
                     if let Some(st) = app.try_state::<AppState>() {
                         kill_speech_child(&st);
+                        if let Some(mut child) = st.cli_child.lock().unwrap().take() {
+                            kill_child_tree(&mut child);
+                        }
                     }
                 }
                 _ => {}
@@ -1612,5 +2129,277 @@ mod migration_tests {
         assert!(outcome.performed);
         assert!(outcome.notice_pending);
         assert_eq!(outcome.files_copied, 0);
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::time::Duration;
+
+    // The fake-CLI scripts read process-global environment variables, so
+    // env-touching tests are serialized.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn fixture(name: &str) -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/cli").join(name)
+    }
+
+    fn temp_workdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ai-tp-cli-test-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn with_env(vars: &[(&str, &str)], f: impl FnOnce()) {
+        // Poison-tolerant: an assertion failure in one test must not cascade
+        // into PoisonError failures in every other env-touching test.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        for (k, v) in vars { std::env::set_var(k, v); }
+        f();
+        for (k, _) in vars { std::env::remove_var(k); }
+    }
+
+    // ── detection ──────────────────────────────────────────
+    #[test]
+    fn find_cli_in_checks_the_given_directories() {
+        let dir = fixture("fake-claude").parent().unwrap().to_path_buf();
+        assert!(find_cli_in("fake-claude", &[dir.clone()], false).is_some());
+        assert!(find_cli_in("fake-nonexistent", &[dir], false).is_none());
+    }
+
+    #[test]
+    fn detects_a_logged_in_claude_cli() {
+        with_env(&[("FAKE_CLAUDE_LOGGED_IN", "1")], || {
+            let v = detect_cli_at("claude-code", &fixture("fake-claude"));
+            assert_eq!(v["state"], "available");
+            assert!(v["version"].as_str().unwrap().contains("9.9.9"));
+        });
+    }
+
+    #[test]
+    fn detects_a_logged_out_claude_cli() {
+        with_env(&[("FAKE_CLAUDE_LOGGED_IN", "0")], || {
+            let v = detect_cli_at("claude-code", &fixture("fake-claude"));
+            assert_eq!(v["state"], "not_logged_in");
+        });
+    }
+
+    #[test]
+    fn detects_codex_login_state() {
+        with_env(&[("FAKE_CODEX_LOGGED_IN", "1")], || {
+            let v = detect_cli_at("codex", &fixture("fake-codex"));
+            assert_eq!(v["state"], "available");
+        });
+        with_env(&[("FAKE_CODEX_LOGGED_IN", "0")], || {
+            let v = detect_cli_at("codex", &fixture("fake-codex"));
+            assert_eq!(v["state"], "not_logged_in");
+            assert!(v["detail"].as_str().unwrap().contains("Not logged in"));
+        });
+    }
+
+    // ── argument construction ──────────────────────────────
+    #[test]
+    fn claude_args_carry_model_effort_and_the_lockdown_flags() {
+        let args = claude_prepare_args("SYS", "opus", "high");
+        let joined = args.join(" ");
+        assert!(args.windows(2).any(|w| w == ["--model", "opus"]));
+        assert!(args.windows(2).any(|w| w == ["--effort", "high"]));
+        assert!(args.windows(2).any(|w| w == ["--output-format", "json"]));
+        assert!(args.windows(2).any(|w| w == ["--system-prompt", "SYS"]));
+        assert!(args.windows(2).any(|w| w == ["--tools", ""]));
+        assert!(joined.contains("--safe-mode"));
+        assert!(joined.contains("--no-session-persistence"));
+
+        // empty model/effort → the flags are omitted entirely
+        let bare = claude_prepare_args("SYS", "", "");
+        assert!(!bare.contains(&"--model".to_string()));
+        assert!(!bare.contains(&"--effort".to_string()));
+    }
+
+    #[test]
+    fn codex_args_carry_model_effort_and_the_sandbox_flags() {
+        let args = codex_prepare_args("/tmp/wd", "/tmp/wd/out.txt", "gpt-x", "xhigh");
+        assert_eq!(args[0], "exec");
+        assert!(args.windows(2).any(|w| w == ["--sandbox", "read-only"]));
+        assert!(args.contains(&"--skip-git-repo-check".to_string()));
+        assert!(args.contains(&"--ephemeral".to_string()));
+        assert!(args.windows(2).any(|w| w == ["-C", "/tmp/wd"]));
+        assert!(args.windows(2).any(|w| w == ["--output-last-message", "/tmp/wd/out.txt"]));
+        assert!(args.windows(2).any(|w| w == ["--model", "gpt-x"]));
+        assert!(args.contains(&"-c".to_string()));
+        assert!(args.contains(&"model_reasoning_effort=\"xhigh\"".to_string()));
+
+        let bare = codex_prepare_args("/w", "/w/o", "", "");
+        assert!(!bare.contains(&"--model".to_string()));
+        assert!(!bare.contains(&"-c".to_string()));
+    }
+
+    // ── invocation, parsing, and error mapping ─────────────
+    fn run_fake(provider: &str, bin: &str, timeout_secs: u64) -> Result<String, String> {
+        let workdir = temp_workdir(&format!("{provider}-{bin}"));
+        let slot = Mutex::new(None);
+        let out = run_provider_cli(
+            provider, &fixture(bin), &workdir,
+            "SYSTEM PROMPT", "USER PROMPT", "modelname", "high",
+            Duration::from_secs(timeout_secs), &slot,
+        );
+        let _ = fs::remove_dir_all(&workdir);
+        out
+    }
+
+    #[test]
+    fn claude_success_returns_the_result_text() {
+        with_env(&[("FAKE_CLAUDE_MODE", "success")], || {
+            let text = run_fake("claude-code", "fake-claude", 15).unwrap();
+            assert!(text.contains("prepared line one"));
+        });
+    }
+
+    #[test]
+    fn claude_prompt_arrives_on_stdin_and_args_are_as_built() {
+        let args_file = std::env::temp_dir().join(format!("ai-tp-argsfile-{}", std::process::id()));
+        let _ = fs::remove_file(&args_file);
+        with_env(&[
+            ("FAKE_CLAUDE_MODE", "success"),
+            ("FAKE_CLI_ARGS_FILE", args_file.to_str().unwrap()),
+        ], || {
+            run_fake("claude-code", "fake-claude", 15).unwrap();
+            let argv = fs::read_to_string(&args_file).unwrap();
+            let lines: Vec<&str> = argv.lines().collect();
+            assert_eq!(lines, claude_prepare_args("SYSTEM PROMPT", "modelname", "high"));
+        });
+        let _ = fs::remove_file(&args_file);
+    }
+
+    #[test]
+    fn claude_json_error_body_maps_to_a_rate_limit_with_the_cli_message() {
+        with_env(&[("FAKE_CLAUDE_MODE", "error_json")], || {
+            let err = run_fake("claude-code", "fake-claude", 15).unwrap_err();
+            assert!(err.starts_with("cli_rate_limit:"), "{err}");
+            assert!(err.contains("usage limit reached"));
+        });
+    }
+
+    #[test]
+    fn claude_stderr_rate_limit_is_surfaced() {
+        with_env(&[("FAKE_CLAUDE_MODE", "rate_limit")], || {
+            let err = run_fake("claude-code", "fake-claude", 15).unwrap_err();
+            assert!(err.starts_with("cli_rate_limit:"), "{err}");
+            assert!(err.contains("resets at 3pm"));
+        });
+    }
+
+    #[test]
+    fn claude_malformed_output_maps_to_a_parse_error() {
+        with_env(&[("FAKE_CLAUDE_MODE", "malformed")], || {
+            let err = run_fake("claude-code", "fake-claude", 15).unwrap_err();
+            assert!(err.starts_with("parse:"), "{err}");
+        });
+    }
+
+    #[test]
+    fn a_hung_cli_times_out_and_is_killed() {
+        with_env(&[("FAKE_CLAUDE_MODE", "sleep"), ("FAKE_SLEEP", "30")], || {
+            let started = std::time::Instant::now();
+            let err = run_fake("claude-code", "fake-claude", 1).unwrap_err();
+            assert!(err.starts_with("timeout:"), "{err}");
+            assert!(started.elapsed() < Duration::from_secs(5)); // killed, not waited out
+        });
+    }
+
+    #[test]
+    fn codex_success_reads_the_last_message_file() {
+        with_env(&[("FAKE_CODEX_MODE", "success")], || {
+            let text = run_fake("codex", "fake-codex", 15).unwrap();
+            assert!(text.contains("prepared by codex"));
+        });
+    }
+
+    #[test]
+    fn codex_rate_limit_stderr_is_surfaced() {
+        with_env(&[("FAKE_CODEX_MODE", "rate_limit")], || {
+            let err = run_fake("codex", "fake-codex", 15).unwrap_err();
+            assert!(err.starts_with("cli_rate_limit:"), "{err}");
+            assert!(err.contains("usage limit"));
+        });
+    }
+
+    #[test]
+    fn codex_missing_output_file_maps_to_a_parse_error() {
+        with_env(&[("FAKE_CODEX_MODE", "no_output")], || {
+            let err = run_fake("codex", "fake-codex", 15).unwrap_err();
+            assert!(err.starts_with("parse:"), "{err}");
+        });
+    }
+
+    // ── real-CLI verification (consumes plan usage — run explicitly) ──
+    // cargo test real_cli -- --ignored --nocapture
+    fn real_prepare(provider: &str, bin_name: &str) -> Result<String, String> {
+        let bin = find_cli(bin_name).expect("CLI not installed");
+        let workdir = temp_workdir(&format!("real-{provider}"));
+        let slot = Mutex::new(None);
+        let system = "You prepare scripts for a teleprompter with a narrow display. \
+            Rewrite the raw script into short lines of 4-8 words, one clause per line. \
+            Insert [PAUSE] markers sparingly. Output ONLY the prepared script text.";
+        let prompt = "Prepare the following script for the teleprompter. Output only the prepared script.\n\n\
+            Welcome to the AI Teleprompter demo. Our launch goes live today, so stay tuned. \
+            Take a breath and keep a calm, even pace.";
+        let out = run_provider_cli(
+            provider, &bin, &workdir, system, prompt, "", "low",
+            std::time::Duration::from_secs(120), &slot,
+        );
+        let _ = fs::remove_dir_all(&workdir);
+        out
+    }
+
+    #[test]
+    #[ignore = "invokes the real Claude Code CLI and consumes plan usage"]
+    fn real_cli_claude_prepare() {
+        let text = real_prepare("claude-code", "claude").expect("claude prepare failed");
+        println!("--- claude-code prepared output ---\n{text}\n---");
+        assert!(text.lines().filter(|l| !l.trim().is_empty()).count() >= 3);
+        assert!(text.to_lowercase().contains("teleprompter"));
+    }
+
+    #[test]
+    #[ignore = "invokes the real Codex CLI and consumes plan usage"]
+    fn real_cli_codex_prepare() {
+        let text = real_prepare("codex", "codex").expect("codex prepare failed");
+        println!("--- codex prepared output ---\n{text}\n---");
+        assert!(text.lines().filter(|l| !l.trim().is_empty()).count() >= 3);
+    }
+
+    #[test]
+    fn cancellation_kills_the_running_cli() {
+        use std::sync::Arc;
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("FAKE_CLAUDE_MODE", "sleep");
+        std::env::set_var("FAKE_SLEEP", "30");
+        let slot: Arc<Mutex<Option<std::process::Child>>> = Arc::new(Mutex::new(None));
+        let slot2 = slot.clone();
+        let workdir = temp_workdir("cancel");
+        let wd = workdir.clone();
+        let handle = std::thread::spawn(move || {
+            run_provider_cli(
+                "claude-code", &fixture("fake-claude"), &wd,
+                "S", "P", "", "", Duration::from_secs(30), &slot2,
+            )
+        });
+        // Wait for the child to appear in the slot, then cancel it.
+        for _ in 0..100 {
+            if slot.lock().unwrap().is_some() { break; }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if let Some(mut child) = slot.lock().unwrap().take() {
+            kill_child_tree(&mut child);
+        }
+        let err = handle.join().unwrap().unwrap_err();
+        std::env::remove_var("FAKE_CLAUDE_MODE");
+        std::env::remove_var("FAKE_SLEEP");
+        let _ = fs::remove_dir_all(&workdir);
+        assert!(err.starts_with("canceled:"), "{err}");
     }
 }

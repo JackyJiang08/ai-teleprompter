@@ -1,0 +1,61 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Part of AI Teleprompter, a fork of openTeleprompt (MIT).
+# Emulates the slice of the Claude Code CLI surface the app uses, for the
+# Rust provider tests. Behavior is driven by environment variables:
+#   FAKE_CLAUDE_LOGGED_IN  1 (default) | 0    — `auth status` result
+#   FAKE_CLAUDE_MODE       success (default) | error_json | rate_limit |
+#                          malformed | sleep  — behavior of a prepare run
+#   FAKE_SLEEP             seconds for the sleep mode (default 30)
+#   FAKE_CLI_ARGS_FILE     when set, argv (one per line) is written here so
+#                          tests can assert argument construction
+
+case "$1" in
+  --version)
+    echo "9.9.9 (Claude Code)"
+    exit 0
+    ;;
+  auth)
+    if [ "$2" = "status" ]; then
+      if [ "${FAKE_CLAUDE_LOGGED_IN:-1}" = "1" ]; then
+        echo '{"loggedIn": true, "authMethod": "claude.ai", "subscriptionType": "max"}'
+        exit 0
+      else
+        echo '{"loggedIn": false}'
+        exit 1
+      fi
+    fi
+    exit 2
+    ;;
+esac
+
+# Anything else is a prepare run (`-p ...` with the prompt on stdin).
+if [ -n "$FAKE_CLI_ARGS_FILE" ]; then
+  printf '%s\n' "$@" > "$FAKE_CLI_ARGS_FILE"
+fi
+PROMPT=$(cat)
+
+case "${FAKE_CLAUDE_MODE:-success}" in
+  success)
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"prepared line one [pause]\nprepared line two"}'
+    exit 0
+    ;;
+  error_json)
+    echo '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude usage limit reached — resets at 3pm"}'
+    exit 1
+    ;;
+  rate_limit)
+    echo "Rate limit exceeded. Your usage limit resets at 3pm." >&2
+    exit 1
+    ;;
+  malformed)
+    echo "this is not json at all"
+    exit 0
+    ;;
+  sleep)
+    sleep "${FAKE_SLEEP:-30}"
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"too late"}'
+    exit 0
+    ;;
+esac
+exit 3

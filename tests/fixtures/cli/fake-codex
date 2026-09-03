@@ -1,0 +1,72 @@
+#!/bin/bash
+# SPDX-License-Identifier: MIT
+# Part of AI Teleprompter, a fork of openTeleprompt (MIT).
+# Emulates the slice of the OpenAI Codex CLI surface the app uses, for the
+# Rust provider tests. Behavior is driven by environment variables:
+#   FAKE_CODEX_LOGGED_IN  1 (default) | 0     — `login status` result
+#   FAKE_CODEX_MODE       success (default) | rate_limit | no_output | sleep
+#   FAKE_SLEEP            seconds for the sleep mode (default 30)
+#   FAKE_CLI_ARGS_FILE    when set, exec argv (one per line) is written here
+
+case "$1" in
+  --version)
+    echo "codex-cli 9.9.9"
+    exit 0
+    ;;
+  login)
+    if [ "$2" = "status" ]; then
+      if [ "${FAKE_CODEX_LOGGED_IN:-1}" = "1" ]; then
+        echo "Logged in using ChatGPT"
+        exit 0
+      else
+        echo "Not logged in. Run codex login." >&2
+        exit 1
+      fi
+    fi
+    exit 2
+    ;;
+  exec)
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+
+shift
+if [ -n "$FAKE_CLI_ARGS_FILE" ]; then
+  printf '%s\n' "$@" > "$FAKE_CLI_ARGS_FILE"
+fi
+
+# Locate the --output-last-message value.
+OUT=""
+prev=""
+for a in "$@"; do
+  if [ "$prev" = "--output-last-message" ] || [ "$prev" = "-o" ]; then
+    OUT="$a"
+  fi
+  prev="$a"
+done
+
+PROMPT=$(cat)
+
+case "${FAKE_CODEX_MODE:-success}" in
+  success)
+    if [ -n "$OUT" ]; then
+      printf 'prepared by codex [slow]\nsecond line\n' > "$OUT"
+    fi
+    echo '{"type":"turn.completed"}'
+    exit 0
+    ;;
+  rate_limit)
+    echo "You've hit your usage limit. Upgrade to Pro or try again later." >&2
+    exit 1
+    ;;
+  no_output)
+    exit 0
+    ;;
+  sleep)
+    sleep "${FAKE_SLEEP:-30}"
+    exit 0
+    ;;
+esac
+exit 3
