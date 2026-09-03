@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "description": "Voice-tracking AI teleprompter for macOS",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "tauri dev",
     "dev:vite": "vite",

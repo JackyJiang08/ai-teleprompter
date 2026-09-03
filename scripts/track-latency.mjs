@@ -11,6 +11,9 @@
  * utterance (exact start/end from the sidecar's "feed" events). Latency per
  * word = first partial containing it − its estimated spoken time. Constant
  * ~few-ms bias from interpolation cancels out in before/after comparisons.
+ * Words are read from the per-word "words" segments the sidecar now emits
+ * (substring/timestamp/duration/confidence), falling back to splitting the
+ * flat "text" for older recordings.
  *
  * Usage: node scripts/track-latency.mjs [runs]
  *   TL_SENTENCE="..."  override the spoken sentence
@@ -92,7 +95,9 @@ for (let run = 1; run <= RUNS; run++) {
   const durPerWord = (feedEnd.recv - feedStart.recv) / SPOKEN.length
   const seen = new Map()
   for (const m of partials) {
-    const words = String(m.text || '').split(/\s+/).map(norm)
+    const words = Array.isArray(m.words) && m.words.length
+      ? m.words.map(x => norm(String(x.w || '')))
+      : String(m.text || '').split(/\s+/).map(norm)
     let idx = 0
     for (const w of words) {
       const at = SPOKEN.indexOf(w, idx)

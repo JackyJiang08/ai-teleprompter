@@ -39,6 +39,12 @@ export default function ReadView() {
   // matched position, for debugging recognition/matcher behavior
   const trackDebug = new URLSearchParams(window.location.search).has('trackdebug')
   const [debug, setDebug] = useState(null)
+  // Dev-only session recorder (?trackrecord=1): captures the script plus the
+  // full raw sidecar stream and saves it as a replayable regression fixture
+  // (tests/fixtures/tracking/, via the dev-only save_tracking_fixture
+  // command) when the reading session ends.
+  const trackRecord = new URLSearchParams(window.location.search).has('trackrecord')
+  const recorderRef = useRef(null)
 
   // Refs for values used inside RAF/interval (must not be stale)
   const isPausedRef = useRef(false)
@@ -86,6 +92,14 @@ export default function ReadView() {
     setTrackBoth({ active: true, cursor: firstWord, committed: firstWord, done: firstWord === -1 })
     setRecognition({ engine: 'speech', status: 'starting', message: '', cursorTokenIndex: firstWord })
 
+    if (trackRecord && !recorderRef.current) {
+      recorderRef.current = {
+        script: scriptText,
+        locale: 'en-US',
+        recordedAt: new Date().toISOString(),
+        messages: [],
+      }
+    }
     const tracker = createSpeechTracker({
       // English-only scope: recognition always runs en-US. The sidecar keeps
       // its --locale parameter for future use, but no UI selects another.
@@ -93,7 +107,9 @@ export default function ReadView() {
       tokens,
       scriptText,
       trickyWords: configRef.current.trackingHints || '',
-      onDebug: trackDebug ? (msg) => {
+      onDebug: (trackDebug || trackRecord) ? (msg) => {
+        if (trackRecord) recorderRef.current?.messages.push(msg)
+        if (!trackDebug) return
         if (msg.type === 'partial' || msg.type === 'final') {
           setDebug(d => ({ ...d, text: msg.text, session: msg.session, confidence: msg.confidence, at: Date.now(), emitted: msg.t }))
         } else if (msg.type === 'lm') {
@@ -284,6 +300,11 @@ export default function ReadView() {
       if (rafRef.current) cancelAnimationFrame(rafRef.current)
       if (silenceTimer.current) clearTimeout(silenceTimer.current)
       stopEngines()
+      // Persist a recorded session once, when reading ends (dev-only).
+      if (recorderRef.current?.messages.length) {
+        API.saveTrackingFixture(JSON.stringify(recorderRef.current))
+        recorderRef.current = null
+      }
       setRecognition({ engine: 'none', status: 'idle', message: '', cursorTokenIndex: -1, matchedCount: 0, confidence: 0 })
       unlistenShortcut?.()
     }

@@ -30,6 +30,7 @@ export const API = {
     tricky: tricky ?? null,
   }),
   stopSpeech: () => tauriInvoke('stop_speech'),
+  saveTrackingFixture: (json) => tauriInvoke('save_tracking_fixture', { json }),
   getSpeechStatus: () => tauriInvoke('get_speech_status'),
   onSpeechMsg: (cb) => tauriListen('speech-msg', (e) => cb(e.payload)),
   setSpeechNotice: (message) => tauriInvoke('set_speech_notice', { message }),

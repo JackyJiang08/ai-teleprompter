@@ -866,6 +866,31 @@ fn get_speech_status(state: State<AppState>) -> serde_json::Value {
     state.speech_status.lock().unwrap().clone()
 }
 
+// Dev-only (?trackrecord=1): saves a recorded reading session — the script
+// text plus the raw sidecar message stream — as a JSON regression fixture
+// under tests/fixtures/tracking/ in the repo checkout (replayed by
+// scripts/track-replay.mjs). Compiled out of release builds, which have no
+// repo checkout to write into.
+#[tauri::command]
+#[allow(unused_variables)]
+fn save_tracking_fixture(json: String) -> Result<String, String> {
+    #[cfg(debug_assertions)]
+    {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/fixtures/tracking");
+        fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let path = dir.join(format!("session-{stamp}.json"));
+        fs::write(&path, json).map_err(|e| e.to_string())?;
+        eprintln!("[trackrecord] fixture saved: {}", path.display());
+        Ok(path.to_string_lossy().to_string())
+    }
+    #[cfg(not(debug_assertions))]
+    Err("recording is available in dev builds only".to_string())
+}
+
 // ── AI provider proxy (Prepare with AI) ────────────────────
 // The frontend builds prompts and parses responses (src/lib/ai.js); this side
 // is a dumb transport that owns the secrets: the Anthropic API key lives in
@@ -1267,7 +1292,7 @@ pub fn run() {
             open_url, open_settings,
             focus_prompter, elevate_notch_window,
             start_speech, stop_speech, get_speech_status,
-            set_speech_notice, get_speech_notice,
+            set_speech_notice, get_speech_notice, save_tracking_fixture,
             ai_complete, ai_test, set_ai_key, has_ai_key,
         ])
         .setup(|app| {

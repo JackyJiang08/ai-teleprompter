@@ -1,0 +1,1044 @@
+{
+  "name": "synthetic-teleport",
+  "description": "Reproduces the sentence-3-to-4 teleport: a stray 'I' in a partial tail while reading sentence 3 must not jump the cursor to sentence 4 (which begins with 'I').",
+  "script": "Today I want to walk you through the plan.\nWe started with a small prototype in March.\nThe team built the tracking engine over the summer.\nI think the results speak for themselves.",
+  "locale": "en-US",
+  "expectedFinal": 33,
+  "messages": [
+    {
+      "type": "ready",
+      "locale": "en-US",
+      "onDevice": true,
+      "t": 0
+    },
+    {
+      "type": "partial",
+      "session": 1,
+      "text": "today i",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "today",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 1000
+    },
+    {
+      "type": "partial",
+      "session": 1,
+      "text": "today i want to",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "today",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "want",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "to",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 1260
+    },
+    {
+      "type": "partial",
+      "session": 1,
+      "text": "today i want to walk you",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "today",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "want",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "to",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "walk",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "you",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 1520
+    },
+    {
+      "type": "partial",
+      "session": 1,
+      "text": "today i want to walk you through the plan",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "today",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "want",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "to",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "walk",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "you",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "through",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "plan",
+          "t": 2.8,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 1780
+    },
+    {
+      "type": "partial",
+      "session": 1,
+      "text": "today i want to walk you through the plan",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "today",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "want",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "to",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "walk",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "you",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "through",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "plan",
+          "t": 2.8,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 2040
+    },
+    {
+      "type": "final",
+      "session": 1,
+      "text": "today i want to walk you through the plan",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "today",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "want",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "to",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "walk",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "you",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "through",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "plan",
+          "t": 2.8,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 2300
+    },
+    {
+      "type": "partial",
+      "session": 2,
+      "text": "we started",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "we",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "started",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 2560
+    },
+    {
+      "type": "partial",
+      "session": 2,
+      "text": "we started with a",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "we",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "started",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "with",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "a",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 2820
+    },
+    {
+      "type": "partial",
+      "session": 2,
+      "text": "we started with a small prototype",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "we",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "started",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "with",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "a",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "small",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "prototype",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 3080
+    },
+    {
+      "type": "partial",
+      "session": 2,
+      "text": "we started with a small prototype in march",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "we",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "started",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "with",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "a",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "small",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "prototype",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "in",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "march",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 3340
+    },
+    {
+      "type": "partial",
+      "session": 2,
+      "text": "we started with a small prototype in march",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "we",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "started",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "with",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "a",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "small",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "prototype",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "in",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "march",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 3600
+    },
+    {
+      "type": "final",
+      "session": 2,
+      "text": "we started with a small prototype in march",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "we",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "started",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "with",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "a",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "small",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "prototype",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "in",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "march",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 3860
+    },
+    {
+      "type": "partial",
+      "session": 3,
+      "text": "the team",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 4120
+    },
+    {
+      "type": "partial",
+      "session": 3,
+      "text": "the team built",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "built",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 4380
+    },
+    {
+      "type": "partial",
+      "session": 3,
+      "text": "the team built the i",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "built",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "i",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 4640
+    },
+    {
+      "type": "partial",
+      "session": 3,
+      "text": "the team built the tracking",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "built",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "tracking",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 4900
+    },
+    {
+      "type": "partial",
+      "session": 3,
+      "text": "the team built the tracking engine over the",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "built",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "tracking",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "engine",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "over",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 5160
+    },
+    {
+      "type": "partial",
+      "session": 3,
+      "text": "the team built the tracking engine over the summer",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "built",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "tracking",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "engine",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "over",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "summer",
+          "t": 2.8,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 5420
+    },
+    {
+      "type": "final",
+      "session": 3,
+      "text": "the team built the tracking engine over the summer",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "the",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "team",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "built",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "tracking",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "engine",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "over",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 2.45,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "summer",
+          "t": 2.8,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 5680
+    },
+    {
+      "type": "partial",
+      "session": 4,
+      "text": "i think",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "i",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "think",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 5940
+    },
+    {
+      "type": "partial",
+      "session": 4,
+      "text": "i think the results speak",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "i",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "think",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "results",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "speak",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 6200
+    },
+    {
+      "type": "partial",
+      "session": 4,
+      "text": "i think the results speak for themselves",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "i",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "think",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "results",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "speak",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "for",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "themselves",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 6460
+    },
+    {
+      "type": "final",
+      "session": 4,
+      "text": "i think the results speak for themselves",
+      "confidence": 0.85,
+      "words": [
+        {
+          "w": "i",
+          "t": 0.0,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "think",
+          "t": 0.35,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "the",
+          "t": 0.7,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "results",
+          "t": 1.05,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "speak",
+          "t": 1.4,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "for",
+          "t": 1.75,
+          "d": 0.3,
+          "c": 0.85
+        },
+        {
+          "w": "themselves",
+          "t": 2.1,
+          "d": 0.3,
+          "c": 0.85
+        }
+      ],
+      "t": 6720
+    }
+  ]
+}
