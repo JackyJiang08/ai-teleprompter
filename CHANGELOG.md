@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.0.0 — 2026-09-02
+
+The app is renamed **AI Teleprompter** (previously "Bilingual AI
+Teleprompter") and its scope narrows to English-only speech tracking.
+
+### Rename
+
+- Product name, bundle identifier (`com.jackyjiang.bilingual-teleprompter`
+  → `com.jackyjiang.ai-teleprompter`), npm/Cargo package and binary names,
+  Keychain service, language-model cache directory, and the GitHub
+  repository (`bilingual-ai-teleprompter` → `ai-teleprompter`; old URLs
+  redirect) all follow the new name
+- Because the bundle identifier changed, macOS treats 2.0 as a new app. On
+  first launch the app copies anything under the old identifier's
+  Application Support directory into the new one — copied, never moved or
+  deleted, and exactly once (marker file). The script library and settings
+  live in identifier-independent files and carry over untouched. What
+  cannot cross an identity change: the Keychain-stored AI provider key
+  (re-enter it in Settings) and the microphone/speech-recognition
+  permissions (macOS asks again) — a one-time notice in the app explains
+  this after the migration
+
+### English-only scope
+
+- The speech language selector is removed from Settings; word tracking
+  always runs the on-device `en-US` recognizer (the sidecar keeps its
+  internal locale parameter for future use, but no UI exposes it)
+- The tokenizer and cursor matcher work on whitespace-delimited words
+  only; the per-character CJK splitting, the script/recognition
+  language-mismatch warning, and the Chinese-specific "Prepare with AI"
+  prompt instructions are removed
+- Demo/seed scripts and visual-test fixtures are English-only
+
 ## v1.1.0 — 2026-08-20
 
 UI and word-tracking polish release, driven by real-world use on a

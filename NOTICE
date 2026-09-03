@@ -23,8 +23,8 @@ Upstream HEAD at fork:
 
 The full upstream commit history is preserved in this repository as part of
 attribution. This fork (maintained by Yuqing "Jacky" Jiang,
-https://github.com/JackyJiang08) extends the original project with Chinese /
-bilingual speech tracking and AI script preparation; modifications made in
+https://github.com/JackyJiang08) extends the original project with
+word-level speech tracking and AI script preparation; modifications made in
 this fork are also provided under the MIT License.
 
 Because upstream ships no standalone LICENSE file, this fork adds one (see

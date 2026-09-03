@@ -20,7 +20,7 @@ On a normal launch exactly two things appear: the notch pill (the `prompter` win
 
 In addition to the windows there is one supervised child process: **`speech-sidecar`**, a Swift binary (source `src-tauri/sidecar/speech-sidecar.swift`, bundled via `externalBin` in `tauri.conf.json`) that runs Apple's `SFSpeechRecognizer` fully on-device and streams partial transcripts to the app — see §3.1.
 
-Entry point: `src-tauri/src/main.rs:4-6` calls `open_teleprompter_lib::run()`, which registers four plugins — `tauri_plugin_global_shortcut`, `tauri_plugin_fs`, `tauri_plugin_shell`, `tauri_plugin_positioner` — installs `AppState`, registers the invoke handlers, and builds the tray + global shortcuts in `setup()`.
+Entry point: `src-tauri/src/main.rs:4-6` calls `ai_teleprompter_lib::run()`, which runs the one-time identity migration (§1.5), then registers four plugins — `tauri_plugin_global_shortcut`, `tauri_plugin_fs`, `tauri_plugin_shell`, `tauri_plugin_positioner` — installs `AppState`, registers the invoke handlers, and builds the tray + global shortcuts in `setup()`.
 
 The two React windows are separate Vite entry points, declared in `vite.config.js:14-17` (`rollupOptions.input: { main: 'index.html', settings: 'settings.html' }`). They do **not** share JS state; they synchronize only through the Rust backend (see §1.3).
 
@@ -45,8 +45,8 @@ Permissions for the WebView side are scoped in `src-tauri/capabilities/default.j
 
 Three state stores, with the Rust side as source of truth for anything persistent:
 
-1. **Rust `AppState`**: `Mutex<Config>`, `Mutex<Option<(f64,f64)>>` (last classic-mode window position), plus the speech sidecar's `CommandChild` handle and last status value. `Config` holds `scroll_speed`, `threshold`, `screenshare_hidden`, `mode`, `opacity`, `auto_scroll`, `mic_device_id`, `theme`, `speech_lang`, `word_tracking`, and the non-secret AI settings `ai_provider`/`ai_model`/`ai_local_url`; serialized camelCase (fields added by this fork carry `#[serde(default)]`s so pre-existing config files still parse). The Anthropic API key is **not** in `Config` — it lives in the macOS Keychain (§4.4).
-2. **Disk**: three dotfiles in the user's home directory (`lib.rs:123-139`): `~/.teleprompter-config.json`, `~/.teleprompter-scripts.json`, `~/.teleprompter-launched` (first-launch marker). Writes happen in `save_config` (`lib.rs:147-151`) and `save_scripts_to_disk` (`lib.rs:251-255`).
+1. **Rust `AppState`**: `Mutex<Config>`, `Mutex<Option<(f64,f64)>>` (last classic-mode window position), plus the speech sidecar's `CommandChild` handle and last status value. `Config` holds `scroll_speed`, `threshold`, `screenshare_hidden`, `mode`, `opacity`, `auto_scroll`, `mic_device_id`, `theme`, `word_tracking`, and the non-secret AI settings `ai_provider`/`ai_model`/`ai_local_url`; serialized camelCase (fields added by this fork carry `#[serde(default)]`s so pre-existing config files still parse). The Anthropic API key is **not** in `Config` — it lives in the macOS Keychain (§4.4).
+2. **Disk**: two dotfiles in the user's home directory: `~/.teleprompter-config.json` and `~/.teleprompter-scripts.json` (upstream's `~/.teleprompter-launched` first-launch marker went away with the welcome window, §1.1). Writes happen in `save_config` and `save_scripts_to_disk`. Both paths are independent of the bundle identifier, which is why the 2.0 rename did not touch them (§1.5).
 3. **Zustand store** (`src/store/index.js`): a single `useAppStore` with `view` (`'idle' | 'edit' | 'read'`), a `config` mirror, `scripts` + `currentScriptIndex`, the active script (`scriptText` plain text, `scriptDoc` Tiptap JSON), playback flags, and `recognition` — the speech-tracking state written by ReadView while reading (`engine: 'none'|'speech'|'vad'`, `status`, `message`, `cursorTokenIndex`, `matchedCount`, `total`, `confidence`).
 
 **Caveat (verified):** the playback flags in the store (`isSpeaking`, `isPaused`, `isHoverPaused`, `isRunning`, `speedIndex`, `store/index.js:29-39`) are written by nothing — `ReadView.jsx:16-17` shadows them with local `useState`, and all `setIsSpeaking`/`setIsPaused` calls in `ReadView` are those local setters. `IdleView.jsx:4` reads the store's `isSpeaking`/`isPaused`, which therefore remain at their initial `false`. Treat the store flags as dead code inherited from a refactor; real playback state lives in `ReadView` local state + refs (§3.2.3). The newer `recognition` slice IS live — ReadView writes it while reading.
@@ -58,6 +58,10 @@ Documented here because they affect where new code can safely go; none were chan
 - **(Fixed in this fork.)** Upstream pointed several release URLs at `renderer/*` paths absent from the bundled frontend (the Vite build emits only `index.html` and `settings.html`): the initial prompter (which loaded only via the asset protocol's SPA fallback — now `index.html` directly) and the first-launch `welcome` window (which rendered an unclosable blank window — now removed, see §1.1). Only the compiled-out Windows settings path still references `renderer/`.
 - `src/lib/api.js:5` — `elevateNotchWindow` calls a bare `invoke` (undefined identifier; would throw if invoked). Nothing calls it: notch elevation actually happens Rust-side (§2.2). The `elevate_notch_window` command (`lib.rs:267-279`) is effectively unreachable from JS as wired.
 - `src-tauri/Cargo.toml:23-33`: `serde`, `serde_json`, `dirs`, `open` and all four Tauri plugins are declared under `[target.'cfg(target_os = "macos")'.dependencies]`, so the crate as committed only builds on macOS (consistent with the README's "Windows v3 coming soon").
+
+### 1.5 Identity migration (v2.0.0 rename)
+
+v2.0.0 renamed the bundle identifier to `com.jackyjiang.ai-teleprompter`, so macOS treats the app as new. `migrate_previous_identity()` (called first thing in `run()`) copies anything under the old identifier's `~/Library/Application Support` directory into the new one — copy-only, never overwriting an existing destination file and never touching the source — guarded by a marker file (`migrated-from-previous-identity.json`) in the new directory so it runs exactly once. The scripts/config dotfiles (§1.3) are identifier-independent and need no migration. When any old-identity footprint is detected (old app-support, caches, LM cache, or WebKit directory), `RunEvent::Ready` shows a one-time `NSAlert` explaining the two things that cannot cross an identity change: the Keychain-stored API key and the TCC microphone/speech permissions. The copy logic is unit-tested against fixture directories (`cargo test`, `migration_tests` in `lib.rs`).
 
 ---
 
@@ -118,9 +122,9 @@ Two pipelines can drive the prompter while reading:
 
 **Matching (JS).** `src/lib/matcher.js` implements the forward-searching cursor:
 
-- Script tokens come from `tokenizeDoc` (`src/lib/tokenizer.js`), which splits whitespace-delimited chunks and then breaks CJK ideograph runs into one token per character (`cjk: true`, `splitCJK`) — Mandarin is matched character-by-character, embedded Latin runs ("我们的React项目") stay whole, and `spaceAfter` records where the source actually had whitespace so rendering doesn't invent gaps.
+- Script tokens come from `tokenizeDoc` (`src/lib/tokenizer.js`), which splits text into whitespace-delimited word tokens (markers and newlines are display-only token types).
 - Transcript text is tokenized the same way (`tokenizeTranscript`), and both sides are normalized by `normalizeWord`: NFKC fold (full-width → half-width), lowercase, strip all non-letter/non-digit characters in any script.
-- `createCursorMatcher(tokens)` keeps a **monotonic** cursor over the matchable word tokens. Each new transcript word is searched in a lookahead window (default 12 words) starting at the cursor; a hit advances the cursor past it (absorbing skipped script words), a miss is dropped (fillers like "um"/"嗯", misreads). Partials that revise already-consumed words are ignored via longest-common-prefix diffing, and session rotation resets transcript state without moving the cursor. The window bound also prevents a stray common word ("the", "的") from teleporting the cursor. Unit tests: `src/lib/__tests__/matcher.test.js` and `tokenizer.test.js` (`npm test`).
+- `createCursorMatcher(tokens)` keeps a **monotonic** cursor over the matchable word tokens. Each new transcript word is searched in a lookahead window (default 12 words) starting at the cursor; a hit advances the cursor past it (absorbing skipped script words), a miss is dropped (fillers like "um", misreads). Partials that revise already-consumed words are ignored via longest-common-prefix diffing, and session rotation resets transcript state without moving the cursor. The window bound also prevents a stray common word ("the") from teleporting the cursor. Unit tests: `src/lib/__tests__/matcher.test.js` and `tokenizer.test.js` (`npm test`).
 
 **Frontend wiring.** `src/lib/speech.js` (`createSpeechTracker`) subscribes to `speech-msg`, feeds partials into the matcher, and owns policy: up to 2 restarts on unexpected termination, then fallback; fatal error codes map to user-facing messages (`fallbackMessageFor`). `ReadView.jsx` starts the tracker on mount when `config.wordTracking` is on, mirrors every update into the Zustand `recognition` state, and renders word tokens with per-token refs and classes — `tok-spoken` (opacity 0.35) for tokens behind the cursor, `tok-current` (accent underline) for the next expected word, full brightness ahead (`src/style.css`). The RAF loop's tracking branch eases the scroll offset toward `currentWordEl.offsetTop − 0.35 × viewportHeight` with exponential smoothing (`FOLLOW_SMOOTHING`), so the reading line sits at ~35% of the viewport and the scroll speed is entirely driven by the reader. Cue markers, hover-pause, manual wheel scrubbing, and the `[PAUSE]`/`[BREATHE]`/`[SLOW]` behaviors are unchanged.
 
@@ -191,7 +195,7 @@ ahead of the voice rather than trailing it.
 **Customized language model (macOS 14+).** At session start the sidecar
 builds an `SFCustomLanguageModelData` from the current script (one
 `PhraseCount` per line, ≤500 lines, count 10), exports it to
-`~/Library/Caches/bilingual-teleprompter-lm/<sha256(script|locale)>.bin`, and
+`~/Library/Caches/ai-teleprompter-lm/<sha256(script|locale)>.bin`, and
 prepares it via `SFSpeechLanguageModel.prepareCustomLanguageModel`. The
 exported asset is cached per (script, locale) hash — edits change the hash
 and force a rebuild. Preparation is asynchronous: early sessions run the
@@ -210,12 +214,12 @@ partial tail, session number, LM state, matched/total counts, confidence,
 and the age of the last partial — for eyeballing raw recognition against the
 matcher's position.
 
-**Language mismatch.** A clear script/locale mismatch (English script with
-中文 tracking, or a mostly-Chinese script with English tracking) would stall
-the cursor silently; `languageMismatchMessage` (src/lib/speech.js) detects it
-when reading starts, shows it in the read-mode status line, and pushes it to
-the settings window via `set_speech_notice`/`speech-notice`. Mixed-language
-scripts are fine and produce no warning.
+**Locale.** Recognition always runs `en-US` (v2.0.0 narrowed the scope to
+English). The sidecar keeps its `--locale` argument and the
+`start_speech(locale, …)` command keeps its parameter for future use, but
+no UI selects another locale; `ReadView` passes `en-US` unconditionally.
+The `set_speech_notice`/`speech-notice` advisory channel remains wired
+(Rust command + settings display) but currently has no writer.
 
 ---
 
@@ -235,23 +239,23 @@ Whole-array read/write through two commands: `get_scripts` → `load_scripts()` 
 - Save: `saveCurrentScript` (`EditView.jsx:60-75`) derives `name` from the first line (≤ 40 chars), `text` from `editor.getText()`, `content` from `JSON.stringify(editor.getJSON())`, updates the array in Zustand, and calls `API.saveScripts` (write-through).
 - Load: `loadScript(i)` / mount effect parse `script.content` back into the editor, falling back to wrapping `script.text` in a paragraph on parse failure (`EditView.jsx:48-58`, `99-111`).
 - Handoff to the prompter: `handleStart` (`EditView.jsx:77-85`) saves, then `setScriptText(text)` + `setScriptDoc(editor.getJSON())` + `setView('read')`.
-- Rendering for reading: `tokenizeDoc` (`src/lib/tokenizer.js`) walks the Tiptap JSON and flattens it to tokens `{ type: 'word'|'marker'|'newline', text, bold, color, marker, cjk, spaceAfter }`. Chunks are split on whitespace, then CJK ideograph runs are split per character (see §3.1); `spaceAfter` preserves original spacing for display. `ReadView` renders one `<span>` per token (with speech-tracking classes, §3.1). Word-count stats still assume `\s+`-separated words at 130 WPM (`EditView.jsx:18-24`), so the estimate is rough for Chinese scripts.
+- Rendering for reading: `tokenizeDoc` (`src/lib/tokenizer.js`) walks the Tiptap JSON and flattens it to tokens `{ type: 'word'|'marker'|'newline', text, bold, color, marker }`, split on whitespace. `ReadView` renders one `<span>` per token (with speech-tracking classes, §3.1). Word-count stats assume `\s+`-separated words at 130 WPM (`EditView.jsx:18-24`).
 
 ---
 
 ### 4.4 Prepare with AI (this fork)
 
-An optional, explicitly user-triggered preprocessing step that rewrites a raw script into teleprompter form (short lines, spoken phrasing, cue markers; Chinese lines broken at prosodic boundaries). Fully inert when unconfigured — the app behaves exactly as upstream.
+An optional, explicitly user-triggered preprocessing step that rewrites a raw script into teleprompter form (short lines, spoken phrasing, cue markers). Fully inert when unconfigured — the app behaves exactly as upstream.
 
 **Split of responsibilities.** Everything testable lives in JS; secrets and transport live in Rust:
 
-- `src/lib/ai.js` — builds the prompt (`buildPrepareMessages`, with a CJK-detection addendum for Chinese scripts), parses/normalizes the response (`parsePreparedResponse`: fence stripping, marker-case normalization, blank-line collapsing), converts prepared text to a Tiptap doc (`preparedTextToDoc`, one paragraph per line), and maps provider error codes to actionable messages (`mapAiError`). Unit tests with mocked providers: `src/lib/__tests__/ai.test.js`.
+- `src/lib/ai.js` — builds the prompt (`buildPrepareMessages`), parses/normalizes the response (`parsePreparedResponse`: fence stripping, marker-case normalization, blank-line collapsing), converts prepared text to a Tiptap doc (`preparedTextToDoc`, one paragraph per line), and maps provider error codes to actionable messages (`mapAiError`). Unit tests with mocked providers: `src/lib/__tests__/ai.test.js`.
 - `ai_complete(system, prompt)` in `src-tauri/src/lib.rs` — a dumb async transport with two implementations behind `config.ai_provider`:
   - `"anthropic"` — `POST https://api.anthropic.com/v1/messages` via `reqwest`; model from `ai_model` (default `claude-opus-5`); handles the `refusal` stop reason and opts into server-side refusal fallbacks (`fallbacks: "default"`, beta `server-side-fallback-2026-07-01`).
   - `"local"` — `POST {ai_local_url}/v1/chat/completions` (OpenAI-compatible, e.g. Ollama) for fully offline use; requires an explicit model name.
   - Errors return as `code:detail` strings (`no_provider`, `no_api_key`, `no_model`, `auth`, `rate_limit` with retry-after, `model_not_found`, `network`, `refusal`, `server`, `parse`).
 
-**Key storage.** The Anthropic API key is stored in the macOS Keychain via the `keyring` crate (service `OpenTeleprompter`, account `anthropic-api-key`). `set_ai_key` writes/deletes, `has_ai_key` reports existence; the key itself is read only inside `ai_complete` at request time and **never crosses IPC to the WebView** and never touches the JSON config files.
+**Key storage.** The Anthropic API key is stored in the macOS Keychain via the `keyring` crate (service `AI Teleprompter`, account `anthropic-api-key`). `set_ai_key` writes/deletes, `has_ai_key` reports existence; the key itself is read only inside `ai_complete` at request time and **never crosses IPC to the WebView** and never touches the JSON config files.
 
 **UI flow.** `EditView.jsx` `handlePrepare`: no provider configured → `open_settings` (settings carries setup instructions); otherwise `prepareScript(editor.getText())`. On success the view switches to a side-by-side review — original (read-only) vs prepared (editable textarea) — with Accept/Reject. `acceptReview` first appends the pre-preparation script to the library (`"<name> · original"`, persisted via `save_scripts`) so the original stays recoverable, then replaces the editor content with `preparedTextToDoc(...)`. Reject leaves the editor untouched. Nothing ever runs automatically.
 
@@ -267,7 +271,7 @@ An optional, explicitly user-triggered preprocessing step that rewrites a raw sc
 - Voice sensitivity: a log-scale slider mapping `0.003–0.562` RMS (`sliderToThreshold`, `SettingsView.jsx:19-22`), displayed in dB, with a live RMS meter from its own mic stream (`startMeter`, `SettingsView.jsx:118-139`).
 - Mode switching calls the dedicated `switch_mode` command (not `set_config`) because the prompter window must be destroyed and recreated (`SettingsView.jsx:154-157`, `lib.rs:309-333`).
 - Mic enumeration via `enumerateDevices` after a temporary permission-priming stream (`SettingsView.jsx:105-116`).
-- Word tracking (this fork): a "Word Tracking" toggle (`wordTracking`) and an English/中文 selector (`speechLang: 'en-US' | 'zh-CN'`), plus a live status line driven by `get_speech_status` + `speech-msg` events and an on-device privacy note. A language change takes effect at the start of the next reading session (the sidecar takes its locale at spawn).
+- Word tracking (this fork): a "Word Tracking" toggle (`wordTracking`) plus a live status line driven by `get_speech_status` + `speech-msg` events and an on-device privacy note. Recognition always runs `en-US` (§3.3 Locale); there is no language selector.
 - Prepare with AI (this fork): provider selector (Off / Claude API / Local → `aiProvider`), model and local-URL text fields (`aiModel`, `aiLocalUrl`, committed on blur), and Keychain key management through `set_ai_key`/`has_ai_key` (the key value never reaches the settings window after save). Includes the explicit-action notice required by the feature: scripts are sent only on ✦ Prepare.
 
 ### 5.2 Global shortcuts
@@ -321,7 +325,7 @@ This fork implemented the word tracker along the three seams identified here; th
 
 1. **Engine seam** → `src/lib/speech.js` (`createSpeechTracker`), a sibling of `createMicEngine` that streams sidecar transcripts into the matcher and owns restart/fallback policy. The RMS/band VAD (`src/lib/mic.js`) was kept intact as the fallback engine.
 2. **Scroll-application seam** → the RAF loop in `ReadView.jsx` gained a tracking branch: per-word refs (`wordRefs`) give token→DOM geometry, and the scroll offset eases toward the current word's `offsetTop` at the 35% reading line.
-3. **Token seam** → `tokenizeDoc` splits CJK runs per character (with `cjk`/`spaceAfter` flags) instead of `Intl.Segmenter` word segmentation — per-character matching proved simpler and more robust for cursor tracking; `src/lib/matcher.js` handles normalization and transcript alignment. Still open: the 130-WPM stat in `EditView.jsx:18-24` remains whitespace-based.
+3. **Token seam** → `tokenizeDoc` flattens the Tiptap doc to whitespace-delimited word tokens; `src/lib/matcher.js` handles normalization and transcript alignment.
 
 Remaining extension surface here: swapping the recognizer (e.g. a Whisper sidecar for more locales) only requires emitting the same NDJSON protocol from a different binary; nothing above the sidecar changes.
 

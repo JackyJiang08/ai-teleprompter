@@ -4,11 +4,11 @@ name: Release
 # - The release body below is written per-release; update it before tagging
 #   a new version (it is the canonical release-notes draft).
 # - Asset naming caveat: DMG names derive from tauri.conf.json productName
-#   ("Bilingual AI Teleprompter"); GitHub replaces spaces with dots in
-#   uploaded asset filenames (Bilingual.AI.Teleprompter_x.y.z_arch.dmg).
-#   Do NOT rename the product to "fix" this — the app is published under
-#   this name. If predictable asset names ever matter, rename the files in
-#   a build step before upload instead.
+#   ("AI Teleprompter"); GitHub replaces spaces with dots in uploaded asset
+#   filenames (AI.Teleprompter_x.y.z_arch.dmg). Do NOT rename the product
+#   to "fix" this — the app is published under this name. If predictable
+#   asset names ever matter, rename the files in a build step before
+#   upload instead.
 on:
   push:
     tags:
@@ -26,37 +26,30 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }} — Bilingual AI Teleprompter
+          name: ${{ github.ref_name }} — AI Teleprompter
           draft: true
           prerelease: false
           body: |
-            ## Bilingual AI Teleprompter v1.1.0
+            ## AI Teleprompter v2.0.0
 
-            A UI and word-tracking polish release, shaped by real-world use on a MacBook Pro 14". Six areas of improvement over [v1.0.0](https://github.com/JackyJiang08/bilingual-ai-teleprompter/releases/tag/v1.0.0):
+            The app has a new name — **AI Teleprompter** — and a sharper focus: English-only, on-device word tracking plus AI script preparation.
 
             ---
 
-            ### 🎯 Smarter word tracking
+            ### 🏷️ Renamed
 
-            - **Script-biased recognition (macOS 14+):** each reading session builds a customized on-device language model from your script (Apple `SFCustomLanguageModelData`), so recognition is biased toward the exact words you're reading — the difference is largest for names and technical terms. Cached per script, rebuilt when you edit, and silently skipped on older systems or unsupported locales. Measured on a jargon-heavy test sentence: words recognized 10/18 → 13/18, p90 word-to-recognition latency 1428 ms → 792 ms ([methodology](https://github.com/JackyJiang08/bilingual-ai-teleprompter/blob/main/docs/ARCHITECTURE.md)).
-            - **The highlight keeps up with your voice:** scroll easing tightened (~280 ms → ~100 ms time constant) and the spoken-word fade halved (300 ms → 150 ms), so the current-word highlight reads as slightly ahead of you instead of trailing.
-            - **Clear language-mismatch warnings:** an English script with 中文 tracking selected (or the reverse) is now flagged in the reading view and Settings instead of silently stalling.
+            Product name, bundle identifier, and repository are all renamed (the repository's old URLs redirect). Everything else about the app — the notch pill, word tracking, ✦ Prepare, the script library — works exactly as in [v1.1.0](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v1.1.0).
 
-            ### 🏝️ Pixel-perfect notch fit, on any Mac
+            ### 🔁 Automatic migration from 1.x
 
-            The collapsed pill now measures the physical notch at runtime (NSScreen safe-area metrics) instead of using hardcoded values — exact width, position, and height on any notched MacBook at any display-scaling setting. Non-notch displays and classic mode are unchanged.
+            Because the bundle identifier changed, macOS treats 2.0 as a brand-new app. On first launch the app migrates the previous install's data automatically — everything is **copied, never moved or deleted**, and only once. Two things macOS cannot carry across an identity change, and a one-time in-app notice explains both:
 
-            ### 📝 A simpler editor
+            - **AI provider API key** — re-enter it in Settings → Prepare with AI (it lives only in the macOS Keychain).
+            - **Microphone & Speech Recognition permissions** — macOS asks for them again on your first reading session.
 
-            One header row: close · script tabs (with a “+” tab for new scripts) · ✦ Prepare · Go · quit. The Save button is gone — edits autosave with a subtle “Saved” indicator (⌘S still saves on demand). Cue markers are one compact “+ Cue” menu and bold/colors live in a “⋯” menu, both in the footer. All the reclaimed space goes to your script text.
+            ### 🇺🇸 English-only scope
 
-            ### ✦ Guided AI setup
-
-            First click on ✦ Prepare now walks you through the one-time provider setup right in the editor — Claude API key (Keychain) or a local Ollama-compatible server — with a real “Test connection” check, then continues your original Prepare automatically. Already configured? Prepare runs immediately with a visible progress state.
-
-            ### 🌗 Theme-safe text and themed scrollbars
-
-            Script text defaults to white on dark / dark on light everywhere (editor and prompter), explicit colors that could vanish against a theme background are neutralized (including in previously saved scripts), and every scrollable view uses thin overlay-style scrollbars with no track background in both themes.
+            Word tracking now always runs the on-device `en-US` recognizer, and the language selector is gone from Settings. The tokenizer and matcher work on whitespace-delimited words, which simplifies the whole tracking pipeline.
 
             ---
 
@@ -64,22 +57,22 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | 🍎 Apple Silicon (M1–M4) | `Bilingual AI Teleprompter_1.1.0_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
-            | 🍎 Intel Mac | `Bilingual AI Teleprompter_1.1.0_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.0.0_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Intel Mac | `AI Teleprompter_2.0.0_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
 
             ### ⚠️ First launch
 
             The app isn't signed with an Apple Developer certificate, so macOS will claim it's "damaged". It isn't — remove the quarantine flag once:
 
             ```bash
-            xattr -cr "/Applications/Bilingual AI Teleprompter.app"
+            xattr -cr "/Applications/AI Teleprompter.app"
             ```
 
             On first read, macOS will ask for **Microphone** and **Speech Recognition** permissions — both are used entirely on-device.
 
             ---
 
-            Free and open source (MIT). Based on openTeleprompt by ArunNGun — see [NOTICE](https://github.com/JackyJiang08/bilingual-ai-teleprompter/blob/main/NOTICE) for provenance.
+            Free and open source (MIT). Based on openTeleprompt by ArunNGun — see [NOTICE](https://github.com/JackyJiang08/ai-teleprompter/blob/main/NOTICE) for provenance.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
