@@ -147,10 +147,13 @@ describe('Prepare with AI onboarding', () => {
     const prepare = [...container.querySelectorAll('.pill-btn')].find(b => b.textContent === '✦ Prepare')
     await act(async () => { fireEvent.click(prepare) })
     expect(container.querySelector('#ai-setup')).toBeTruthy()
-    // both provider options are explained
+    // all four provider options are offered, subscriptions first
     const cards = [...container.querySelectorAll('.setup-card-title')].map(e => e.textContent)
-    expect(cards).toEqual(['Claude API', 'Local (Ollama)'])
-    expect([...container.querySelectorAll('.setup-actions .pill-btn')][0].textContent).toBe('Test connection')
+    expect(cards).toHaveLength(4)
+    expect(cards[0]).toContain('Claude subscription')
+    expect(cards[1]).toContain('ChatGPT subscription')
+    expect(cards[2]).toContain('Claude API key')
+    expect(cards[3]).toContain('Local (Ollama)')
   })
 
   it('successful test saves the provider and auto-continues the Prepare', async () => {
@@ -164,20 +167,49 @@ describe('Prepare with AI onboarding', () => {
     const { container } = render(<EditView />)
     const prepare = [...container.querySelectorAll('.pill-btn')].find(b => b.textContent === '✦ Prepare')
     await act(async () => { fireEvent.click(prepare) })
+    // pick the API-key card, enter a key, test
+    const apiCard = [...container.querySelectorAll('.setup-card')].find(c => c.textContent.includes('Claude API key'))
+    await act(async () => { fireEvent.click(apiCard) })
     const key = container.querySelector('input[type="password"]')
     fireEvent.change(key, { target: { value: 'sk-ant-test' } })
-    const testBtn = [...container.querySelectorAll('.setup-actions .pill-btn')][0]
+    const testBtn = [...container.querySelectorAll('.setup-actions .pill-btn')].find(b => b.textContent === 'Test connection')
     await act(async () => { fireEvent.click(testBtn) })
     expect(invoke).toHaveBeenCalledWith('ai_test', expect.anything())
     expect(invoke).toHaveBeenCalledWith('set_ai_key', { key: 'sk-ant-test' })
-    expect(invoke).toHaveBeenCalledWith('set_config', expect.objectContaining({ patch: expect.objectContaining({ aiProvider: 'anthropic' }) }))
+    expect(invoke).toHaveBeenCalledWith('set_config', expect.objectContaining({ patch: expect.objectContaining({ aiProvider: 'anthropic-api' }) }))
     // the original Prepare continued without a second Prepare click
     expect(invoke).toHaveBeenCalledWith('ai_complete', expect.anything())
   })
 
+  it('a claude-code Prepare lands in the review diff', async () => {
+    seedScript()
+    useAppStore.setState({
+      config: {
+        ...useAppStore.getState().config,
+        aiProvider: 'claude-code',
+        aiPrefs: { 'claude-code': { model: 'opus', effort: 'high' } },
+      },
+    })
+    invoke.mockImplementation((cmd) => {
+      if (cmd === 'ai_cli_prepare') return Promise.resolve('prepared by claude [pause]\nsecond line')
+      return Promise.resolve(null)
+    })
+    const { container } = render(<EditView />)
+    const prepare = [...container.querySelectorAll('.pill-btn')].find(b => b.textContent === '✦ Prepare')
+    await act(async () => { fireEvent.click(prepare) })
+    // model/effort travelled through to the CLI command
+    expect(invoke).toHaveBeenCalledWith('ai_cli_prepare', expect.objectContaining({
+      provider: 'claude-code', model: 'opus', effort: 'high',
+    }))
+    // …and the parsed output is in the side-by-side review
+    const preparedBox = container.querySelector('.ai-prepared')
+    expect(preparedBox).toBeTruthy()
+    expect(preparedBox.value).toContain('prepared by claude [PAUSE]')
+  })
+
   it('configured provider runs Prepare immediately with a visible progress state', async () => {
     seedScript()
-    useAppStore.setState({ config: { ...useAppStore.getState().config, aiProvider: 'anthropic' } })
+    useAppStore.setState({ config: { ...useAppStore.getState().config, aiProvider: 'anthropic-api' } })
     let resolveComplete
     invoke.mockImplementation((cmd) => {
       if (cmd === 'ai_complete') return new Promise(r => { resolveComplete = r })

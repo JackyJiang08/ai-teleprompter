@@ -37,7 +37,14 @@ export const API = {
   getSpeechNotice: () => tauriInvoke('get_speech_notice'),
   onSpeechNotice: (cb) => tauriListen('speech-notice', (e) => cb(e.payload)),
   openSettings: () => tauriInvoke('open_settings'),
-  aiComplete: (system, prompt) => tauriInvoke('ai_complete', { system, prompt }),
+  aiComplete: (system, prompt, model, effort) => tauriInvoke('ai_complete', {
+    system, prompt, model: model || null, effort: effort || null,
+  }),
   aiTest: (cfg) => tauriInvoke('ai_test', { cfg }),
   setAiKey: (key) => tauriInvoke('set_ai_key', { key }),
+  detectAiProvider: (provider) => tauriInvoke('detect_ai_provider', { provider }),
+  aiCliPrepare: (provider, system, prompt, model, effort) => tauriInvoke('ai_cli_prepare', {
+    provider, system, prompt, model: model || null, effort: effort || null, timeoutSecs: null,
+  }),
+  cancelAiCli: () => tauriInvoke('cancel_ai_cli'),
 }

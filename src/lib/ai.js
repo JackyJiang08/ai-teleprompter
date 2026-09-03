@@ -9,6 +9,95 @@
 
 import { API } from './api'
 
+// ── Providers ──────────────────────────────────────────────
+// Four ways to reach a model, all funnelled through prepareScript():
+//
+//   claude-code    the user's Claude subscription, via the official Claude
+//                  Code CLI (`claude -p`) they have installed and logged into
+//   codex          the user's ChatGPT subscription, via the official OpenAI
+//                  Codex CLI (`codex exec`)
+//   anthropic-api  their own Anthropic API key (macOS Keychain)
+//   ollama         any local OpenAI-compatible server — fully offline
+//
+// The subscription providers ONLY delegate to the official CLIs — the app
+// never reads or proxies credentials and never calls the vendors'
+// subscription endpoints itself (rationale: docs/ARCHITECTURE.md §4.4a).
+// Each provider exposes detect() / listModels() / supportsEffort(model) /
+// prepare(system, prompt, {model, effort}).
+
+export const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh']
+export const EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high' }
+
+export const PROVIDER_ORDER = ['claude-code', 'codex', 'anthropic-api', 'ollama']
+
+export const PROVIDERS = {
+  'claude-code': {
+    label: 'Claude subscription',
+    via: 'Claude Code CLI',
+    detect: () => API.detectAiProvider('claude-code'),
+    listModels: () => ['', 'opus', 'sonnet', 'haiku', 'fable'],
+    supportsEffort: () => true,
+    instructions: {
+      not_installed: 'Install Claude Code (claude.com/claude-code), then run `claude` once to sign in.',
+      not_logged_in: 'Run `claude` in a terminal and sign in with your Claude account.',
+    },
+    prepare: (system, prompt, { model, effort } = {}) =>
+      API.aiCliPrepare('claude-code', system, prompt, model || '', effort || ''),
+  },
+  codex: {
+    label: 'ChatGPT subscription',
+    via: 'OpenAI Codex CLI',
+    detect: () => API.detectAiProvider('codex'),
+    listModels: () => [''],
+    supportsEffort: () => true,
+    instructions: {
+      not_installed: 'Install the Codex CLI: npm i -g @openai/codex, then codex login.',
+      not_logged_in: 'Run `codex login` in a terminal and sign in with your ChatGPT account.',
+    },
+    prepare: (system, prompt, { model, effort } = {}) =>
+      API.aiCliPrepare('codex', system, prompt, model || '', effort || ''),
+  },
+  'anthropic-api': {
+    label: 'Claude API key',
+    via: 'Anthropic API',
+    detect: () => API.detectAiProvider('anthropic-api'),
+    listModels: () => ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'],
+    // output_config.effort is rejected by models that don't support it
+    // (e.g. Haiku 4.5) — omit it there rather than surface a 400.
+    supportsEffort: (model) => !String(model || '').includes('haiku'),
+    instructions: {
+      not_configured: 'Save an Anthropic API key below (console.anthropic.com).',
+    },
+    prepare: (system, prompt, { model, effort } = {}) => API.aiComplete(
+      system, prompt, model || '',
+      PROVIDERS['anthropic-api'].supportsEffort(model) ? (effort || '') : ''),
+  },
+  ollama: {
+    label: 'Ollama (local)',
+    via: 'any OpenAI-compatible server',
+    detect: () => API.detectAiProvider('ollama'),
+    listModels: () => [],
+    supportsEffort: () => false,
+    instructions: {
+      not_running: 'Start your local server (`ollama serve`) and set a model name.',
+    },
+    prepare: (system, prompt, { model } = {}) => API.aiComplete(system, prompt, model || '', ''),
+  },
+}
+
+// Human-readable description of what a Prepare run will use, for the
+// progress state ("Claude subscription · opus · High effort").
+export function describePrepareTarget(provider, prefs = {}) {
+  const def = PROVIDERS[provider]
+  if (!def) return ''
+  const parts = [def.label]
+  if (prefs.model) parts.push(prefs.model)
+  if (prefs.effort && def.supportsEffort(prefs.model)) {
+    parts.push(`${EFFORT_LABELS[prefs.effort] || prefs.effort} effort`)
+  }
+  return parts.join(' · ')
+}
+
 // ── Prompt construction ────────────────────────────────────
 const BASE_SYSTEM = `You prepare scripts for a teleprompter with a narrow display. Rewrite the raw script into teleprompter-ready form while preserving its meaning.
 
@@ -77,6 +166,18 @@ export function mapAiError(err) {
   switch (code) {
     case 'no_provider':
       return { code, needsSetup: true, message: 'No AI provider configured. Choose one in Settings → Prepare with AI.' }
+    case 'cli_not_installed':
+      return { code, needsSetup: true, message: `The provider's CLI is not installed. ${detail}`.trim() }
+    case 'cli_not_logged_in':
+      return { code, needsSetup: true, message: `The provider's CLI is not signed in. ${detail}`.trim() }
+    case 'cli_rate_limit':
+      return { code, message: `The provider reports a usage limit: ${detail.trim()}` }
+    case 'cli_failed':
+      return { code, message: `The provider CLI failed: ${detail.trim()}` }
+    case 'timeout':
+      return { code, message: `${detail.trim()} Try a lower effort level, or try again.` }
+    case 'canceled':
+      return { code, canceled: true, message: 'Prepare was cancelled.' }
     case 'no_api_key':
       return { code, needsSetup: true, message: 'No Anthropic API key saved. Add one in Settings → Prepare with AI (stored in the macOS Keychain).' }
     case 'no_model':
@@ -107,10 +208,21 @@ export function mapAiError(err) {
 }
 
 // ── Orchestration ──────────────────────────────────────────
-// complete(system, prompt) is injectable for tests; defaults to the Tauri
-// command. Returns the cleaned prepared text or throws (see mapAiError).
-export async function prepareScript(scriptText, complete = API.aiComplete) {
+// prepareScript(text, {provider, model, effort}) routes through the selected
+// provider; `transport(system, prompt)` is injectable for tests. Returns the
+// cleaned prepared text or throws (see mapAiError).
+export async function prepareScript(scriptText, opts = {}, transport = null) {
   const { system, prompt } = buildPrepareMessages(scriptText)
-  const raw = await complete(system, prompt)
+  let send = transport
+  if (!send) {
+    const def = PROVIDERS[opts.provider]
+    if (!def) {
+      const err = new Error('No AI provider configured')
+      err.code = 'no_provider'
+      throw err
+    }
+    send = (s, p) => def.prepare(s, p, opts)
+  }
+  const raw = await send(system, prompt)
   return parsePreparedResponse(raw)
 }

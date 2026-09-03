@@ -65,10 +65,10 @@ describe('preparedTextToDoc', () => {
   })
 })
 
-describe('prepareScript with mocked providers', () => {
+describe('prepareScript with an injected transport', () => {
   it('sends built messages to the provider and returns parsed text', async () => {
     const complete = vi.fn().mockResolvedValue('```\nshort line [pause]\nnext line\n```')
-    const result = await prepareScript('A long rambling script that needs preparation.', complete)
+    const result = await prepareScript('A long rambling script that needs preparation.', {}, complete)
 
     expect(complete).toHaveBeenCalledOnce()
     const [system, prompt] = complete.mock.calls[0]
@@ -79,12 +79,12 @@ describe('prepareScript with mocked providers', () => {
 
   it('propagates provider errors for the UI to map', async () => {
     const complete = vi.fn().mockRejectedValue('rate_limit:30|Too many requests')
-    await expect(prepareScript('text', complete)).rejects.toBe('rate_limit:30|Too many requests')
+    await expect(prepareScript('text', {}, complete)).rejects.toBe('rate_limit:30|Too many requests')
   })
 
   it('rejects an empty provider response with a coded error', async () => {
     const complete = vi.fn().mockResolvedValue('')
-    await expect(prepareScript('text', complete)).rejects.toMatchObject({ code: 'empty_response' })
+    await expect(prepareScript('text', {}, complete)).rejects.toMatchObject({ code: 'empty_response' })
   })
 })
 

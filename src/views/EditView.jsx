@@ -5,7 +5,7 @@ import { TextStyle } from '@tiptap/extension-text-style'
 import { Color } from '@tiptap/extension-color'
 import { useAppStore } from '../store'
 import { API } from '../lib/api'
-import { mapAiError, preparedTextToDoc, prepareScript } from '../lib/ai'
+import { describePrepareTarget, mapAiError, preparedTextToDoc, prepareScript } from '../lib/ai'
 import { sanitizeDocColors } from '../lib/tokenizer'
 import AiSetupPanel from './AiSetupPanel'
 
@@ -45,7 +45,8 @@ export default function EditView() {
   const [saveState, setSaveState] = useState('idle')
   // 'cue' | 'format' | null — the open footer menu
   const [openMenu, setOpenMenu] = useState(null)
-  // Prepare-with-AI state: explicit user action only, never automatic
+  // Prepare-with-AI state: explicit user action only, never automatic.
+  // aiBusy is falsy when idle, else the provider/model/effort description.
   const [aiBusy, setAiBusy] = useState(false)
   const [aiError, setAiError] = useState('')
   const [review, setReview] = useState(null) // { originalDoc, originalText, prepared }
@@ -196,20 +197,26 @@ export default function EditView() {
   // The actual run, assuming a provider is configured on the Rust side.
   // Called directly after guided setup completes so the originally requested
   // Prepare continues without a second click.
-  async function runPrepare() {
+  // overrideProvider: the guided setup hands back the provider it just
+  // configured — the store's config mirror may not have synced yet.
+  async function runPrepare(overrideProvider) {
     if (!editor || aiBusy) return
     const text = editor.getText().trim()
     if (!text) return
+    const provider = overrideProvider || config?.aiProvider || ''
+    const prefs = (config?.aiPrefs || {})[provider] || {}
     setAiError('')
-    setAiBusy(true)
+    setAiBusy(describePrepareTarget(provider, prefs) || 'AI')
     try {
-      const prepared = await prepareScript(text)
+      const prepared = await prepareScript(text, { provider, model: prefs.model, effort: prefs.effort })
       setReview({ originalDoc: editor.getJSON(), originalText: text, prepared })
     } catch (e) {
       const mapped = mapAiError(e)
-      setAiError(mapped.message)
-      // Missing key/model/provider → guided setup instead of raw settings
-      if (mapped.needsSetup) setSetupOpen(true)
+      if (!mapped.canceled) {
+        setAiError(mapped.message)
+        // Missing key/CLI/provider → guided setup instead of raw settings
+        if (mapped.needsSetup) setSetupOpen(true)
+      }
     } finally {
       setAiBusy(false)
     }
@@ -259,7 +266,7 @@ export default function EditView() {
     return (
       <AiSetupPanel
         onCancel={() => setSetupOpen(false)}
-        onReady={() => { setSetupOpen(false); runPrepare() }}
+        onReady={(provider) => { setSetupOpen(false); runPrepare(provider) }}
       />
     )
   }
@@ -320,7 +327,12 @@ export default function EditView() {
       {aiBusy && (
         <div id="ai-progress" role="status">
           <span className="ai-spinner" aria-hidden="true" />
-          Preparing your script…
+          Preparing with {typeof aiBusy === 'string' ? aiBusy : 'AI'}…
+          <button
+            className="pill-btn ghost ai-cancel"
+            onClick={() => API.cancelAiCli()}
+            title="Cancel Prepare"
+          >Cancel</button>
         </div>
       )}
 
