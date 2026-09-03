@@ -85,6 +85,33 @@ describe('autosave', () => {
   })
 })
 
+describe('the script library is only written by real edits', () => {
+  it('merely loading a script never triggers an autosave', async () => {
+    // Tiptap v3's setContent emits an update by default; the load paths must
+    // suppress it or every mount rewrites the library (and a demo-seeded
+    // session would rewrite it with demo content).
+    seedScript()
+    render(<EditView />)
+    await act(async () => { vi.advanceTimersByTime(5000) })
+    expect(invoke).not.toHaveBeenCalledWith('save_scripts', expect.anything())
+  })
+
+  it('demo sessions (?view=…) never invoke save_scripts, even on explicit save', async () => {
+    window.history.replaceState({}, '', '/?view=edit')
+    try {
+      vi.resetModules()
+      ;({ useAppStore } = await import('../../store'))
+      ;({ default: EditView } = await import('../EditView'))
+      seedScript()
+      render(<EditView />)
+      await act(async () => { fireEvent.keyDown(document, { key: 's', metaKey: true }) })
+      expect(invoke).not.toHaveBeenCalledWith('save_scripts', expect.anything())
+    } finally {
+      window.history.replaceState({}, '', '/')
+    }
+  })
+})
+
 describe('footer menus', () => {
   it('cue markers live in one insert menu', () => {
     seedScript()

@@ -18,6 +18,12 @@ const COLORS = [
 const MARKERS = ['[PAUSE]', '[SLOW]', '[BREATHE]']
 const AUTOSAVE_MS = 800
 
+// Demo/test sessions (?view=… via scripts/snap.mjs or the dev-only
+// TELEPROMPTER_DEMO_PARAMS hook) run on a seeded in-memory library — they
+// must never write the user's real one. Demo navigation is a full page
+// reload, so the params are present at import time.
+const IS_DEMO_SESSION = new URLSearchParams(window.location.search).has('view')
+
 function computeStats(text) {
   const words = text.trim() ? text.trim().split(/\s+/).length : 0
   if (!words) return ''
@@ -81,15 +87,18 @@ export default function EditView() {
     })
   }, [])
 
-  // Load script when editor is ready
+  // Load script when editor is ready. Loading is not an edit: Tiptap v3's
+  // setContent emits an update by default, which would arm the autosave and
+  // immediately rewrite the library with what was just read from it — so
+  // both load paths suppress the update event.
   useEffect(() => {
     if (!editor) return
     const script = scripts[currentScriptIndex]
     if (!script) return
     try {
-      editor.commands.setContent(sanitizeDocColors(JSON.parse(script.content)))
+      editor.commands.setContent(sanitizeDocColors(JSON.parse(script.content)), { emitUpdate: false })
     } catch {
-      editor.commands.setContent(`<p>${script.text || ''}</p>`)
+      editor.commands.setContent(`<p>${script.text || ''}</p>`, { emitUpdate: false })
     }
     setStats(computeStats(script.text || ''))
     setSaveState('idle')
@@ -109,7 +118,7 @@ export default function EditView() {
       setCurrentScriptIndex(0)
     }
     setScripts(updated)
-    API.saveScripts(updated)
+    if (!IS_DEMO_SESSION) API.saveScripts(updated)
     setSaveState('saved')
   }, [editor, scripts, currentScriptIndex])
 
@@ -161,9 +170,9 @@ export default function EditView() {
     const script = scripts[i]
     if (!script) return
     try {
-      editor.commands.setContent(sanitizeDocColors(JSON.parse(script.content)))
+      editor.commands.setContent(sanitizeDocColors(JSON.parse(script.content)), { emitUpdate: false })
     } catch {
-      editor.commands.setContent(`<p>${script.text || ''}</p>`)
+      editor.commands.setContent(`<p>${script.text || ''}</p>`, { emitUpdate: false })
     }
     setStats(computeStats(script.text || ''))
     setSaveState('idle')
@@ -174,7 +183,7 @@ export default function EditView() {
     e.stopPropagation()
     const updated = scripts.filter((_, idx) => idx !== i)
     setScripts(updated)
-    API.saveScripts(updated)
+    if (!IS_DEMO_SESSION) API.saveScripts(updated)
     if (currentScriptIndex >= i) setCurrentScriptIndex(Math.max(-1, currentScriptIndex - 1))
   }
 
@@ -229,7 +238,7 @@ export default function EditView() {
     }
     const updated = [...scripts, backup]
     setScripts(updated)
-    API.saveScripts(updated)
+    if (!IS_DEMO_SESSION) API.saveScripts(updated)
 
     editor.commands.setContent(preparedTextToDoc(review.prepared))
     setStats(computeStats(editor.getText()))
