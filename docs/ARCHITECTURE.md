@@ -33,7 +33,7 @@ The two React windows are separate Vite entry points, declared in `vite.config.j
 
 Direction of traffic:
 
-- **JS → Rust (commands):** the 30 handlers registered in `run()` (`get_config`, `set_config`, `switch_mode`, `get_notch_metrics`, `get_scripts`, `save_scripts`, `set_ignore_mouse`, `resize_prompter`, `toggle_prompter`, `resize_settings`, `quit_app`, `open_devtools`, `hide_settings`, `start_drag`, `set_movable`, `move_window`, `get_window_pos`, `open_url`, `open_settings`, `focus_prompter`, `elevate_notch_window`, `start_speech`, `stop_speech`, `get_speech_status`, `set_speech_notice`, `get_speech_notice`, `ai_complete`, `ai_test`, `set_ai_key`, `has_ai_key`).
+- **JS → Rust (commands):** the 31 handlers registered in `run()` (`get_config`, `set_config`, `switch_mode`, `get_notch_metrics`, `get_scripts`, `save_scripts`, `set_ignore_mouse`, `resize_prompter`, `toggle_prompter`, `resize_settings`, `quit_app`, `open_devtools`, `hide_settings`, `start_drag`, `set_movable`, `move_window`, `get_window_pos`, `open_url`, `open_settings`, `focus_prompter`, `elevate_notch_window`, `start_speech`, `stop_speech`, `get_speech_status`, `set_speech_notice`, `get_speech_notice`, `save_tracking_fixture` (dev-only, §3.3), `ai_complete`, `ai_test`, `set_ai_key`, `has_ai_key`).
 - **Rust → JS (events):** three event names.
   - `config-update` — broadcast by `set_config`; consumed by `App.jsx` (which normalizes snake_case→camelCase) and `SettingsView.jsx`.
   - `shortcut` — emitted to the `prompter` window with a string payload `"pause" | "faster" | "slower" | "reset"` from the global-shortcut handler, and `"stop"` from `switch_mode` and `toggle_prompter`; consumed in `ReadView.jsx`.
@@ -45,7 +45,7 @@ Permissions for the WebView side are scoped in `src-tauri/capabilities/default.j
 
 Three state stores, with the Rust side as source of truth for anything persistent:
 
-1. **Rust `AppState`**: `Mutex<Config>`, `Mutex<Option<(f64,f64)>>` (last classic-mode window position), plus the speech sidecar's `CommandChild` handle and last status value. `Config` holds `scroll_speed`, `threshold`, `screenshare_hidden`, `mode`, `opacity`, `auto_scroll`, `mic_device_id`, `theme`, `word_tracking`, and the non-secret AI settings `ai_provider`/`ai_model`/`ai_local_url`; serialized camelCase (fields added by this fork carry `#[serde(default)]`s so pre-existing config files still parse). The Anthropic API key is **not** in `Config` — it lives in the macOS Keychain (§4.4).
+1. **Rust `AppState`**: `Mutex<Config>`, `Mutex<Option<(f64,f64)>>` (last classic-mode window position), plus the speech sidecar's `CommandChild` handle and last status value. `Config` holds `scroll_speed`, `threshold`, `screenshare_hidden`, `mode`, `opacity`, `auto_scroll`, `mic_device_id`, `theme`, `word_tracking`, `tracking_hints` (the user's tricky-words list, §3.3), and the non-secret AI settings `ai_provider`/`ai_model`/`ai_local_url`; serialized camelCase (fields added by this fork carry `#[serde(default)]`s so pre-existing config files still parse). The Anthropic API key is **not** in `Config` — it lives in the macOS Keychain (§4.4).
 2. **Disk**: two dotfiles in the user's home directory: `~/.teleprompter-config.json` and `~/.teleprompter-scripts.json` (upstream's `~/.teleprompter-launched` first-launch marker went away with the welcome window, §1.1). Writes happen in `save_config` and `save_scripts_to_disk`. Both paths are independent of the bundle identifier, which is why the 2.0 rename did not touch them (§1.5).
 3. **Zustand store** (`src/store/index.js`): a single `useAppStore` with `view` (`'idle' | 'edit' | 'read'`), a `config` mirror, `scripts` + `currentScriptIndex`, the active script (`scriptText` plain text, `scriptDoc` Tiptap JSON), playback flags, and `recognition` — the speech-tracking state written by ReadView while reading (`engine: 'none'|'speech'|'vad'`, `status`, `message`, `cursorTokenIndex`, `matchedCount`, `total`, `confidence`).
 
@@ -116,7 +116,7 @@ Two pipelines can drive the prompter while reading:
 
 **Process.** `src-tauri/sidecar/speech-sidecar.swift` is a standalone Swift binary compiled by `scripts/build-sidecar.sh` into `src-tauri/binaries/speech-sidecar-<target-triple>` (gitignored; built automatically by `beforeDevCommand`/`beforeBuildCommand`) and bundled through `externalBin`. It runs `SFSpeechRecognizer` with `requiresOnDeviceRecognition = true`, `shouldReportPartialResults = true`, `taskHint = .dictation`, and `addsPunctuation = false`, fed by an `AVAudioEngine` input tap. **All recognition is on-device; nothing leaves the machine** — the binary's only output channel is NDJSON on stdout to the parent app. It refuses to run at all (fatal `ondevice_unsupported`) if the selected locale's on-device model is missing.
 
-**Protocol** (one JSON object per stdout line, every message stamped with `t` = ms since epoch): `ready {locale, onDevice}`, `partial`/`final {session, text, confidence}` (confidence = mean of `SFTranscriptionSegment` confidences), `lm {state}` (customized language model lifecycle, §3.3), `feed {state}` (measurement mode only), and `error {code, message, fatal}`. Emission is unbuffered — each line is one direct `write(2)`, so partials reach the parent the moment the recognizer produces them. Recognition tasks are rotated on final results and recoverable errors — each rotation increments `session`, each session's transcript starts empty, and errors reported by an already-rotated (canceled) session are ignored so a rotation can never cascade into more rotations. Fatal codes: `auth_denied`, `auth_restricted`, `locale_unavailable`, `ondevice_unsupported`, `audio_error`, `recognizer_storm` (three failures within 2 s of session start). Args: `--locale <id>`, `--script <path>` (script text for the customized LM, §3.3), `--audio-file <path>` (dev/measurement: feed a file at real-time pace instead of the mic).
+**Protocol** (one JSON object per stdout line, every message stamped with `t` = ms since epoch): `ready {locale, onDevice}`, `partial`/`final {session, text, confidence, words}` — `words` is the per-segment payload (`[{w, t, d, c}]`: substring, timestamp in seconds from the session's audio start, duration, confidence per `SFTranscriptionSegment`; `text` remains the full formatted string, `confidence` the segment mean) — `lm {state}` (customized language model lifecycle, §3.3), `feed {state}` (measurement mode only), and `error {code, message, fatal}`. Emission is unbuffered — each line is one direct `write(2)`, so partials reach the parent the moment the recognizer produces them. Recognition tasks are rotated on final results and recoverable errors — each rotation increments `session`, each session's transcript starts empty, and errors reported by an already-rotated (canceled) session are ignored so a rotation can never cascade into more rotations. Fatal codes: `auth_denied`, `auth_restricted`, `locale_unavailable`, `ondevice_unsupported`, `audio_error`, `recognizer_storm` (three failures within 2 s of session start). Args: `--locale <id>`, `--script <path>` (script text for the customized LM, §3.3), `--contextual <path>` (newline-separated vocabulary set as `contextualStrings` on every recognition request — request-level biasing that works on all supported macOS versions), `--tricky <path>` (the user's tricky-words list, §3.3), `--audio-file <path>` (dev/measurement: feed a file at real-time pace instead of the mic).
 
 **Supervision (Rust).** `start_speech(locale, script_text)` in `src-tauri/src/lib.rs` kills any previous instance (script text is written to a temp file and forwarded as `--script` for the customized LM, §3.3), spawns the sidecar via `tauri_plugin_shell`'s `sidecar()`, and pumps its stdout: every parsed line is broadcast to all windows as a `speech-msg` event; `ready`/`error` lines are also stored in `AppState.speech_status` so the settings window can query the latest state via `get_speech_status` after the fact. Process exit surfaces as a synthetic `{"type":"terminated","code"}` message. `stop_speech` kills the child; the `RunEvent::Exit` handler guarantees the sidecar never outlives the app. Rust makes no policy decisions — restart and fallback logic live in the frontend.
 
@@ -124,7 +124,7 @@ Two pipelines can drive the prompter while reading:
 
 - Script tokens come from `tokenizeDoc` (`src/lib/tokenizer.js`), which splits text into whitespace-delimited word tokens (markers and newlines are display-only token types).
 - Transcript text is tokenized the same way (`tokenizeTranscript`), and both sides are normalized by `normalizeWord`: NFKC fold (full-width → half-width), lowercase, strip all non-letter/non-digit characters in any script.
-- `createCursorMatcher(tokens)` keeps a **monotonic** cursor over the matchable word tokens. Each new transcript word is searched in a lookahead window (default 12 words) starting at the cursor; a hit advances the cursor past it (absorbing skipped script words), a miss is dropped (fillers like "um", misreads). Partials that revise already-consumed words are ignored via longest-common-prefix diffing, and session rotation resets transcript state without moving the cursor. The window bound also prevents a stray common word ("the") from teleporting the cursor. Unit tests: `src/lib/__tests__/matcher.test.js` and `tokenizer.test.js` (`npm test`).
+- `createCursorMatcher(tokens)` maintains two cursors — a **committed** one (evidence-backed, drives the dimming of spoken text) and a **provisional** one (includes the tentative tail of the latest partial, drives the highlight and the scroll) — under the sequence-coherence rules described in §3.3: stopwords can only confirm the next expected word, multi-word advances need a bigram anchor (≤ 6 words), commits require stability (repeat, ~600 ms age, or a final), and a stable bigram anchor can pull the committed cursor back up to 3 words to undo a wrong jump. Unit tests: `src/lib/__tests__/matcher.test.js`, `tokenizer.test.js`, and the fixture replay in `tracking-fixture.test.js` (`npm test`).
 
 **Frontend wiring.** `src/lib/speech.js` (`createSpeechTracker`) subscribes to `speech-msg`, feeds partials into the matcher, and owns policy: up to 2 restarts on unexpected termination, then fallback; fatal error codes map to user-facing messages (`fallbackMessageFor`). `ReadView.jsx` starts the tracker on mount when `config.wordTracking` is on, mirrors every update into the Zustand `recognition` state, and renders word tokens with per-token refs and classes — `tok-spoken` (opacity 0.35) for tokens behind the cursor, `tok-current` (accent underline) for the next expected word, full brightness ahead (`src/style.css`). The RAF loop's tracking branch eases the scroll offset toward `currentWordEl.offsetTop − 0.35 × viewportHeight` with exponential smoothing (`FOLLOW_SMOOTHING`), so the reading line sits at ~35% of the viewport and the scroll speed is entirely driven by the reader. Cue markers, hover-pause, manual wheel scrubbing, and the `[PAUSE]`/`[BREATHE]`/`[SLOW]` behaviors are unchanged.
 
@@ -162,17 +162,90 @@ scriptTextRef.current.style.transform = translateY(-scrollPos)
 
 with `paused = isPausedRef || isHoverPausedRef` gating both branches. Scroll position is a ref (`scrollPosRef`), applied as a CSS transform — it never touches React state or the Zustand store (the `recognition` slice is updated from speech-tracking callbacks, not from the RAF loop). As noted in §1.3, the older Zustand playback flags are dead; Zustand's real responsibilities in read mode are `scriptText`/`scriptDoc` (input), `recognition` (output for other views), and `setView` (exit). Cue markers (`[PAUSE]`, `[BREATHE]`, `[SLOW]`) fire when their DOM element enters the top 40 % of the viewport (`checkMarkers`), driving timed pauses or a speed step-down. Manual wheel scrubbing writes the same `scrollPosRef`.
 
-### 3.3 Tracking latency and the customized language model
+### 3.3 Word-tracking alignment, recognition biasing, and tooling
 
-**Instrumentation.** `scripts/track-latency.mjs` measures the recognition
-pipeline deterministically: it renders a known sentence with macOS TTS
-(`say -o`), then runs the sidecar in `--audio-file` mode, which streams that
-file into the recognizer at real-time pace exactly as if it were live mic
-input (no speakers/microphone involved, so runs are reproducible). Exact feed
-start/end times come from the sidecar's `feed` events; per-word spoken times
-are estimated by linear interpolation across the utterance. `TL_SENTENCE`
-overrides the sentence; `TL_BIAS=1` additionally passes it as `--script` for
-A/B comparisons of the customized language model.
+**Alignment algorithm (`src/lib/matcher.js`).** The original matcher was a
+per-word greedy first-match within a 12-word lookahead, committed
+immediately from unstable partial hypotheses — one stray common word ("I",
+"the") that also began the next sentence teleported the cursor there
+permanently. The current matcher is built around five rules:
+
+1. **Normalization** — applied identically to script and transcript at
+   tokenization time: numbers and percentages expand to spoken form
+   (`23%` → *twenty three percent*; `2027` → *twenty twenty seven* with
+   *two thousand twenty seven* as an alternate), all-caps acronyms to
+   letter sequences (`UIUC` → *u i u c*), hyphenated compounds split (with
+   the joined form as an alternate), possessives accepted with and without
+   the *s*. Each script word carries multiple accepted forms
+   (`expandWordForms`); transcript words expand to their canonical primary
+   sequence, so a formatted token meets its spoken reading in expanded
+   space.
+2. **Stopword rule** — a stopword (`STOPWORDS`) can only confirm the next
+   expected word (advance by 1); it can never justify a jump.
+3. **Jump rule** — advancing by more than one word requires a **bigram
+   anchor**: two consecutive transcript words matching two consecutive
+   script words at the target position, nearest candidate first, at most
+   `MAX_JUMP` (6) words ahead. Unmatched words are dropped (fillers,
+   misreads).
+4. **Stability gating** — two cursors. The **provisional** cursor includes
+   the tentative tail of the latest partial and drives the highlight and
+   the scroll; the **committed** cursor (which dims spoken text and defines
+   `done`) advances only on words that are stable: repeated across two
+   consecutive partials, older than `STABLE_AGE_S` (~600 ms) by segment
+   timestamp, or part of a final result. Commits replay the session's
+   stable prefix from the session base, so later stable evidence can revise
+   an earlier wrong path.
+5. **Bounded backtrack** — a stable bigram anchor up to `MAX_BACKTRACK` (3)
+   words behind the committed cursor pulls it back, correcting a wrong
+   jump.
+
+Fuzzy matching accepts edit distance ≤ 1 for script words of 5+ letters;
+shorter words must match exactly. The public interface is unchanged
+(`feed`/`reset`/`position`), with `position()` now reporting both
+`matchedCount`/`cursorTokenIndex` (committed) and
+`provisionalCount`/`provisionalTokenIndex`; `stats()` exposes committed-path
+jump/backtrack events for the tooling below. On the synthetic teleport
+fixture (below), the legacy matcher scores 1 cross-sentence jump, a 5-word
+skip, and 44% alignment on the affected sentence; the current matcher is
+clean (0 jumps, 100% on every sentence).
+
+**Recognition biasing.** Three layers, all optional and silent on failure:
+
+- `contextualStrings` (all supported macOS versions): the frontend passes
+  the script's non-stopword vocabulary (`buildContextualStrings`, original
+  casing, deduplicated, capped at 100) via `--contextual`; the sidecar sets
+  it on every recognition request.
+- Customized language model (macOS 14+, below).
+- **Tricky words** (Settings → Word Tracking, `tracking_hints`, empty by
+  default): one entry per line, either a bare word (prepended to
+  `contextualStrings` and added as a high-count LM phrase) or
+  `word=phonemes` (X-SAMPA), which additionally registers an
+  `SFCustomLanguageModelData.CustomPronunciation` for proper nouns the
+  recognizer misreads.
+
+**Recording and replay.** `?trackrecord=1` (dev-only, like the other URL
+hooks) records the session — script text plus the full raw sidecar message
+stream — and saves it via the dev-only `save_tracking_fixture` command as a
+JSON fixture under `tests/fixtures/tracking/`.
+`scripts/track-replay.mjs <fixture> [--legacy]` replays a fixture through
+the matcher deterministically and reports cross-sentence jump count, max
+forward skip, backtracks, final cursor error, and per-sentence alignment
+rate; `--legacy` runs an inline copy of the pre-2.1 greedy matcher for
+before/after comparisons. The committed `synthetic-teleport.json` fixture
+reproduces the original bug and is also asserted in the unit suite
+(`tracking-fixture.test.js`).
+
+**Latency instrumentation.** `scripts/track-latency.mjs` measures the
+recognition pipeline deterministically: it renders a known sentence with
+macOS TTS (`say -o`), then runs the sidecar in `--audio-file` mode, which
+streams that file into the recognizer at real-time pace exactly as if it
+were live mic input (no speakers/microphone involved, so runs are
+reproducible). Words are read from the per-word `words` segments (falling
+back to the flat text for old recordings). Exact feed start/end times come
+from the sidecar's `feed` events; per-word spoken times are estimated by
+linear interpolation across the utterance. `TL_SENTENCE` overrides the
+sentence; `TL_BIAS=1` additionally passes it as `--script` for A/B
+comparisons of the customized language model.
 
 **Baseline (2026-08-19, MacBook Pro M4, macOS 15.6, en-US on-device model,
 19-word common-vocabulary sentence at 170 wpm):**
@@ -181,6 +254,9 @@ A/B comparisons of the customized language model.
 |---|---|---|---|
 | partial cadence (inter-partial gap) | 249 ms | 303 ms | 238 ms |
 | spoken word → partial containing it | 400 ms | 619 ms | 413 ms |
+
+Re-validated 2026-09-03 against the per-word protocol (cadence p50 245 ms,
+word→partial p50 418 ms — within run-to-run noise of the baseline).
 
 The cadence is recognizer-bound (Apple emits partials roughly every 250 ms);
 our transport adds ~1 ms (unbuffered NDJSON → Tauri event) and the matcher
@@ -193,16 +269,20 @@ next *expected* word, so with a fast-settling scroll it reads as slightly
 ahead of the voice rather than trailing it.
 
 **Customized language model (macOS 14+).** At session start the sidecar
-builds an `SFCustomLanguageModelData` from the current script (one
-`PhraseCount` per line, ≤500 lines, count 10), exports it to
-`~/Library/Caches/ai-teleprompter-lm/<sha256(script|locale)>.bin`, and
-prepares it via `SFSpeechLanguageModel.prepareCustomLanguageModel`. The
-exported asset is cached per (script, locale) hash — edits change the hash
-and force a rebuild. Preparation is asynchronous: early sessions run the
-stock model, and the pipeline rotates to the biased one when ready
-(`lm {state:"active"}`; typically ≈1 s when cached). Any failure — macOS 13,
-unsupported locale, training error — emits `lm {state:"unavailable"}` and
-recognition continues on the stock model, silently. Measured effect on a
+builds an `SFCustomLanguageModelData` from the current script: one
+`PhraseCount` per line (≤500 lines, count 10), sliding 3–5-word n-gram
+phrases at count 3 (≤3000, teaching local word order, not just
+vocabulary), high-count phrases for the tricky words, and
+`CustomPronunciation`s for `word=phonemes` entries. It exports the asset to
+`~/Library/Caches/ai-teleprompter-lm/<sha256(script|locale|tricky|v2)>.bin`
+and prepares it via `SFSpeechLanguageModel.prepareCustomLanguageModel`. The
+hash covers everything that shapes the model — edits, tricky-word changes,
+and scheme bumps force a rebuild. Preparation is asynchronous: early
+sessions run the stock model, and the pipeline rotates to the biased one
+when ready (`lm {state:"active"}`; typically ≈1 s when cached). Any failure
+— macOS 13, unsupported locale, training error — emits
+`lm {state:"unavailable"}` and recognition continues on the stock model,
+silently. Measured effect of the v1 (per-line phrases only) model on a
 jargon-heavy sentence ("Tauri… NDJSON… WKWebView… Anthropic… Yuqing…",
 `TL_BIAS=1` vs without): words recognized 10/18 → **13/18**, and
 spoken-word→partial p90 1428 ms → **792 ms** (the biased model commits to
@@ -271,7 +351,7 @@ An optional, explicitly user-triggered preprocessing step that rewrites a raw sc
 - Voice sensitivity: a log-scale slider mapping `0.003–0.562` RMS (`sliderToThreshold`, `SettingsView.jsx:19-22`), displayed in dB, with a live RMS meter from its own mic stream (`startMeter`, `SettingsView.jsx:118-139`).
 - Mode switching calls the dedicated `switch_mode` command (not `set_config`) because the prompter window must be destroyed and recreated (`SettingsView.jsx:154-157`, `lib.rs:309-333`).
 - Mic enumeration via `enumerateDevices` after a temporary permission-priming stream (`SettingsView.jsx:105-116`).
-- Word tracking (this fork): a "Word Tracking" toggle (`wordTracking`) plus a live status line driven by `get_speech_status` + `speech-msg` events and an on-device privacy note. Recognition always runs `en-US` (§3.3 Locale); there is no language selector.
+- Word tracking (this fork): a "Word Tracking" toggle (`wordTracking`), a "Tricky words" textarea (`trackingHints` — one word per line, optionally `word=phonemes` in X-SAMPA; empty by default, applied at the next reading session, §3.3), plus a live status line driven by `get_speech_status` + `speech-msg` events and an on-device privacy note. Recognition always runs `en-US` (§3.3 Locale); there is no language selector.
 - Prepare with AI (this fork): provider selector (Off / Claude API / Local → `aiProvider`), model and local-URL text fields (`aiModel`, `aiLocalUrl`, committed on blur), and Keychain key management through `set_ai_key`/`has_ai_key` (the key value never reaches the settings window after save). Includes the explicit-action notice required by the feature: scripts are sent only on ✦ Prepare.
 
 ### 5.2 Global shortcuts
