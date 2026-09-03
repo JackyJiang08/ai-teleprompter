@@ -33,13 +33,13 @@ const CLASSIC_SIZES = {
 }
 
 // Sample script for browser-only visual tests (?view=read): exercises
-// English, mixed-script, and Chinese rendering plus cue markers
+// word rendering plus cue markers
 const DEMO_DOC = {
   type: 'doc',
   content: [
-    { type: 'paragraph', content: [{ type: 'text', text: 'Welcome to the bilingual teleprompter demo.' }] },
-    { type: 'paragraph', content: [{ type: 'text', text: '我们的React项目 launches today [PAUSE] stay tuned.' }] },
-    { type: 'paragraph', content: [{ type: 'text', text: '今天天气很好 我们出去走走 [BREATHE] 慢慢来。' }] },
+    { type: 'paragraph', content: [{ type: 'text', text: 'Welcome to the AI Teleprompter demo.' }] },
+    { type: 'paragraph', content: [{ type: 'text', text: 'Our launch goes live today [PAUSE] stay tuned.' }] },
+    { type: 'paragraph', content: [{ type: 'text', text: 'Take a breath [BREATHE] and keep a calm, even pace.' }] },
   ],
 }
 
@@ -68,7 +68,6 @@ export default function App() {
         threshold:   cfg.threshold   ?? 0.018,
         autoScroll:  cfg.autoScroll  ?? cfg.auto_scroll  ?? false,
         micDeviceId: cfg.micDeviceId ?? cfg.mic_device_id ?? 'default',
-        speechLang:   cfg.speechLang   ?? cfg.speech_lang   ?? 'en-US',
         wordTracking: cfg.wordTracking ?? cfg.word_tracking ?? true,
         aiProvider:   cfg.aiProvider   ?? cfg.ai_provider   ?? '',
         aiModel:      cfg.aiModel      ?? cfg.ai_model      ?? '',
@@ -97,7 +96,7 @@ export default function App() {
       const patch = {}
       const keys = ['mode','theme','scrollSpeed','scroll_speed','opacity','threshold',
                     'autoScroll','auto_scroll','micDeviceId','mic_device_id','fontSize','font_size',
-                    'speechLang','speech_lang','wordTracking','word_tracking',
+                    'wordTracking','word_tracking',
                     'aiProvider','ai_provider','aiModel','ai_model','aiLocalUrl','ai_local_url']
       keys.forEach(k => { if (cfg[k] !== undefined) patch[k] = cfg[k] })
       // Normalise snake_case → camelCase
@@ -105,7 +104,6 @@ export default function App() {
       if (patch.auto_scroll   !== undefined) { patch.autoScroll   = patch.auto_scroll;   delete patch.auto_scroll  }
       if (patch.mic_device_id !== undefined) { patch.micDeviceId  = patch.mic_device_id; delete patch.mic_device_id }
       if (patch.font_size     !== undefined) { patch.fontSize     = patch.font_size;     delete patch.font_size     }
-      if (patch.speech_lang   !== undefined) { patch.speechLang   = patch.speech_lang;   delete patch.speech_lang   }
       if (patch.word_tracking !== undefined) { patch.wordTracking = patch.word_tracking; delete patch.word_tracking }
       if (patch.ai_provider   !== undefined) { patch.aiProvider   = patch.ai_provider;   delete patch.ai_provider   }
       if (patch.ai_model      !== undefined) { patch.aiModel      = patch.ai_model;      delete patch.ai_model      }
@@ -140,7 +138,7 @@ export default function App() {
       const v = q.get('view')
       if (v === 'read') {
         setScriptDoc(DEMO_DOC)
-        setScriptText('Welcome to the bilingual teleprompter demo.')
+        setScriptText('Welcome to the AI Teleprompter demo.')
       }
       if (v === 'edit') {
         // ?scrolldemo=1 pads the doc so the editor overflows — used to verify
@@ -151,8 +149,8 @@ export default function App() {
             ))] }
           : DEMO_DOC
         setScripts([
-          { name: 'Product Demo', text: 'Welcome to the bilingual teleprompter demo.', content: JSON.stringify(doc) },
-          { name: '发布稿 Launch Notes', text: '', content: JSON.stringify(doc) },
+          { name: 'Product Demo', text: 'Welcome to the AI Teleprompter demo.', content: JSON.stringify(doc) },
+          { name: 'Launch Notes', text: '', content: JSON.stringify(doc) },
         ])
         setCurrentScriptIndex(0)
       }

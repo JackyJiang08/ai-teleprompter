@@ -27,11 +27,6 @@ const AI_PROVIDERS = [
   { id: 'local',     label: 'Local' },
 ]
 
-const SPEECH_LANGS = [
-  { id: 'en-US', label: 'English' },
-  { id: 'zh-CN', label: '中文' },
-]
-
 function speechStatusText(v) {
   if (!v || !v.type) return ''
   switch (v.type) {
@@ -64,7 +59,6 @@ export default function SettingsView() {
   const [mics, setMics] = useState([{ deviceId: 'default', label: 'Default microphone' }])
   const [micId, setMicId] = useState('default')
   const [wordTracking, setWordTracking] = useState(true)
-  const [speechLang, setSpeechLang] = useState('en-US')
   const [speechStatus, setSpeechStatus] = useState(null)
   const [speechNotice, setSpeechNotice] = useState('')
   const [aiProvider, setAiProvider] = useState('')
@@ -161,7 +155,6 @@ export default function SettingsView() {
     }
     if (c.micDeviceId)  setMicId(c.micDeviceId)
     if (c.wordTracking != null) setWordTracking(!!c.wordTracking)
-    if (c.speechLang)   setSpeechLang(c.speechLang)
     if (c.aiProvider !== undefined) setAiProvider(c.aiProvider)
     if (c.aiModel !== undefined)    setAiModel(c.aiModel)
     if (c.aiLocalUrl)   setAiLocalUrl(c.aiLocalUrl)
@@ -264,11 +257,6 @@ export default function SettingsView() {
     API.setConfig({ wordTracking: checked })
   }
 
-  function handleSpeechLang(id) {
-    setSpeechLang(id)
-    API.setConfig({ speechLang: id })
-  }
-
   function handleAiProvider(id) {
     setAiProvider(id)
     API.setConfig({ aiProvider: id })
@@ -341,17 +329,6 @@ export default function SettingsView() {
             <Toggle checked={wordTracking} onChange={handleWordTracking} />
           </Row>
           {wordTracking && <>
-            <Row label="Language">
-              <div className="s-mode-group">
-                {SPEECH_LANGS.map(l => (
-                  <button
-                    key={l.id}
-                    className={`s-mode-btn${speechLang === l.id ? ' active' : ''}`}
-                    onClick={() => handleSpeechLang(l.id)}
-                  >{l.label}</button>
-                ))}
-              </div>
-            </Row>
             {speechNotice && (
               <div className="s-row">
                 <span className="s-status error">{speechNotice}</span>

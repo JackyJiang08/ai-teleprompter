@@ -22,30 +22,6 @@
 import { API } from './api'
 import { createCursorMatcher } from './matcher'
 
-// Script language vs recognition locale sanity check. Returns a warning
-// string for a clear mismatch (tracking would stall silently), '' otherwise.
-// Mixed-language scripts (both ratios in range) are fine — the tokenizer and
-// matcher handle them per-word/per-character.
-export function languageMismatchMessage(scriptText, locale) {
-  const text = scriptText || ''
-  let cjk = 0
-  let total = 0
-  for (const ch of text) {
-    if (/\s/.test(ch)) continue
-    total++
-    if (/[㐀-䶿一-鿿豈-﫿]/.test(ch)) cjk++
-  }
-  if (total < 10) return ''
-  const ratio = cjk / total
-  if (locale === 'zh-CN' && ratio < 0.05) {
-    return 'The script looks English but word tracking is set to 中文 — tracking will not advance. Switch the language in Settings.'
-  }
-  if (locale === 'en-US' && ratio > 0.7) {
-    return 'The script is mostly Chinese but word tracking is set to English — tracking will not advance. Switch the language in Settings (中文).'
-  }
-  return ''
-}
-
 const MAX_RESTARTS = 2
 const SPEAKING_HOLD_MS = 900
 

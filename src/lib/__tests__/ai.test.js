@@ -3,26 +3,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildPrepareMessages,
-  cjkRatio,
   mapAiError,
   parsePreparedResponse,
   preparedTextToDoc,
   prepareScript,
 } from '../ai'
-
-describe('cjkRatio', () => {
-  it('is 0 for English and 1 for pure Chinese', () => {
-    expect(cjkRatio('hello world')).toBe(0)
-    expect(cjkRatio('今天天气')).toBe(1)
-    expect(cjkRatio('')).toBe(0)
-  })
-
-  it('ignores whitespace and reflects mixing', () => {
-    const r = cjkRatio('hello 今天')
-    expect(r).toBeGreaterThan(0.2)
-    expect(r).toBeLessThan(0.5)
-  })
-})
 
 describe('buildPrepareMessages', () => {
   it('includes the cue-marker convention and output constraints', () => {
@@ -34,17 +19,8 @@ describe('buildPrepareMessages', () => {
     expect(prompt).toContain('Hello world, this is my speech.')
   })
 
-  it('adds prosodic-boundary guidance only for Chinese scripts', () => {
-    const en = buildPrepareMessages('A plain English speech about testing.')
-    const zh = buildPrepareMessages('今天我想跟大家分享一个故事，关于我们的项目。')
-    const mixed = buildPrepareMessages('We launched 我们的项目 today and 大家都很开心 about it 真的.')
-    expect(en.system).not.toContain('prosodic')
-    expect(zh.system).toContain('prosodic')
-    expect(mixed.system).toContain('prosodic')
-  })
-
   it('never asks for translation', () => {
-    const { system } = buildPrepareMessages('中文 and English')
+    const { system } = buildPrepareMessages('A plain speech about testing.')
     expect(system).toContain('Never translate')
   })
 })
@@ -56,7 +32,7 @@ describe('parsePreparedResponse', () => {
 
   it('strips a wrapping code fence', () => {
     expect(parsePreparedResponse('```\nline one\nline two\n```')).toBe('line one\nline two')
-    expect(parsePreparedResponse('```text\n你好\n```')).toBe('你好')
+    expect(parsePreparedResponse('```text\nhello\n```')).toBe('hello')
   })
 
   it('normalizes marker casing', () => {
@@ -80,12 +56,12 @@ describe('parsePreparedResponse', () => {
 
 describe('preparedTextToDoc', () => {
   it('maps lines to paragraphs and blank lines to empty paragraphs', () => {
-    const doc = preparedTextToDoc('line one\n\n第二行 [PAUSE]')
+    const doc = preparedTextToDoc('line one\n\nline two [PAUSE]')
     expect(doc.type).toBe('doc')
     expect(doc.content).toHaveLength(3)
     expect(doc.content[0]).toEqual({ type: 'paragraph', content: [{ type: 'text', text: 'line one' }] })
     expect(doc.content[1]).toEqual({ type: 'paragraph' })
-    expect(doc.content[2].content[0].text).toBe('第二行 [PAUSE]')
+    expect(doc.content[2].content[0].text).toBe('line two [PAUSE]')
   })
 })
 
@@ -144,7 +120,7 @@ describe('mapAiError', () => {
 // ── WS4: AI-prepared output inherits the default style ─────
 describe('preparedTextToDoc default styling', () => {
   it('produces text nodes with no marks, so output uses the theme default color', () => {
-    const out = preparedTextToDoc('line one [PAUSE]\n\n中文行')
+    const out = preparedTextToDoc('line one [PAUSE]\n\nline two')
     for (const p of out.content) {
       for (const n of p.content || []) {
         expect(n.marks).toBeUndefined()

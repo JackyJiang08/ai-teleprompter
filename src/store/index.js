@@ -13,7 +13,6 @@ export const useAppStore = create((set, get) => ({
     autoScroll: false,
     micDeviceId: 'default',
     theme: 'dark',
-    speechLang: 'en-US',
     wordTracking: true,
     aiProvider: '',
     aiModel: '',

@@ -49,7 +49,7 @@ async function getPage(browser, { view, theme, params, page: pagePath = '', sele
   const url = `${BASE_URL}/${pagePath}?view=${view}&mode=notch&theme=${theme}${params ? `&${params}` : ''}`
   await page.goto(url, { waitUntil: 'networkidle0' })
   await page.waitForSelector(selector)
-  await page.evaluate(() => document.fonts.ready) // CJK glyph swap moves layout
+  await page.evaluate(() => document.fonts.ready) // late glyph swap moves layout
   await new Promise(r => setTimeout(r, 700)) // let animations settle
 
   // Clip to the target element + small padding

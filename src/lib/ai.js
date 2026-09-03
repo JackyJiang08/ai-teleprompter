@@ -8,41 +8,22 @@
 // this module runs automatically.
 
 import { API } from './api'
-import { CJK_RE } from './tokenizer'
-
-// ── Language detection ─────────────────────────────────────
-// Fraction of non-whitespace characters that are CJK ideographs.
-export function cjkRatio(text) {
-  let cjk = 0
-  let total = 0
-  for (const ch of text || '') {
-    if (/\s/.test(ch)) continue
-    total++
-    if (CJK_RE.test(ch)) cjk++
-  }
-  return total === 0 ? 0 : cjk / total
-}
 
 // ── Prompt construction ────────────────────────────────────
 const BASE_SYSTEM = `You prepare scripts for a teleprompter with a narrow display. Rewrite the raw script into teleprompter-ready form while preserving its meaning.
 
 Rules:
-- Keep the original language(s). Never translate. In mixed Chinese-English text, keep each part in its original language.
+- Keep the script's original language. Never translate.
 - Use natural spoken phrasing: break up long written sentences, smooth constructions that are awkward to say aloud. Do not change the meaning.
-- Short lines suited to a narrow panel: one clause or phrase per line, roughly 4-8 English words or 6-14 Chinese characters per line. One line per row.
+- Short lines suited to a narrow panel: one clause or phrase per line, roughly 4-8 words per line. One line per row.
 - Insert cue markers sparingly at rhetorically appropriate points: [PAUSE] after a key statement or before a transition, [BREATHE] before a long or demanding passage, [SLOW] before dense or emphatic material. Markers are literal bracketed tokens placed between words. Use at most one marker every few lines.
 - Separate paragraphs or sections with one blank line.
 - Keep all substantive content. Do not summarize, add new content, add headings, or add numbering.
 - Output ONLY the prepared script text: no preamble, no explanation, no code fences.`
 
-const CHINESE_ADDENDUM = `
-- This script contains Chinese. Break Chinese lines at natural prosodic boundaries — after complete phrases, at punctuation, between clauses — never in the middle of a word or a tightly bound phrase.`
-
 export function buildPrepareMessages(scriptText) {
-  const hasChinese = cjkRatio(scriptText) > 0.05
-  const system = hasChinese ? BASE_SYSTEM + CHINESE_ADDENDUM : BASE_SYSTEM
   const prompt = `Prepare the following script for the teleprompter. Output only the prepared script.\n\n${scriptText}`
-  return { system, prompt }
+  return { system: BASE_SYSTEM, prompt }
 }
 
 // ── Response parsing ───────────────────────────────────────

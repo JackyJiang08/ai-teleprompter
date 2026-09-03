@@ -6,23 +6,18 @@
 // Design constraints (see docs/ARCHITECTURE.md §7a):
 // - The cursor NEVER moves backward. Recognition partials may revise earlier
 //   words; revisions of already-consumed words are ignored.
-// - Skipped script words, filler words ("um", "嗯"), and misreads are
-//   tolerated: transcript words that don't match anything in the lookahead
-//   window are simply dropped, and matching a word deeper in the window
-//   jumps the cursor over the skipped script words.
-// - Works for English (whitespace words), Mandarin (per-character tokens),
-//   and mixed scripts, because both the script tokenizer (tokenizer.js) and
-//   the transcript tokenizer here split text the same way.
-
-import { splitCJK } from './tokenizer'
+// - Skipped script words, filler words ("um"), and misreads are tolerated:
+//   transcript words that don't match anything in the lookahead window are
+//   simply dropped, and matching a word deeper in the window jumps the
+//   cursor over the skipped script words.
 
 // How many upcoming script words to search for each transcript word.
 // Large enough to absorb a skipped phrase, small enough that a stray
-// recognition of a common word ("the", "的") can't teleport the cursor.
+// recognition of a common word ("the") can't teleport the cursor.
 export const DEFAULT_LOOKAHEAD = 12
 
 // Lowercase, fold full-width forms to half-width (NFKC), drop everything
-// that isn't a letter or digit in any script. "Ｒｅａｃｔ，" → "react".
+// that isn't a letter or digit. "Ｒｅａｃｔ，" → "react".
 export function normalizeWord(text) {
   return text
     .normalize('NFKC')
@@ -31,16 +26,13 @@ export function normalizeWord(text) {
 }
 
 // Tokenize recognized transcript text the same way the script is tokenized:
-// whitespace-split, then per-character for CJK runs, then normalized.
-// Returns only non-empty normalized words.
+// whitespace-split, then normalized. Returns only non-empty normalized words.
 export function tokenizeTranscript(text) {
   const out = []
   for (const chunk of (text || '').split(/\s+/)) {
     if (!chunk) continue
-    for (const piece of splitCJK(chunk)) {
-      const norm = normalizeWord(piece)
-      if (norm) out.push(norm)
-    }
+    const norm = normalizeWord(chunk)
+    if (norm) out.push(norm)
   }
   return out
 }

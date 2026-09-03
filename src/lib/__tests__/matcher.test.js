@@ -17,27 +17,22 @@ describe('normalizeWord', () => {
     expect(normalizeWord("don't")).toBe('dont')
   })
 
-  it('folds full-width characters and strips CJK punctuation', () => {
-    expect(normalizeWord('Ｒｅａｃｔ，')).toBe('react')
-    expect(normalizeWord('好。')).toBe('好')
+  it('folds full-width characters to half-width', () => {
+    expect(normalizeWord('Ｒｅａｃｔ')).toBe('react')
   })
 })
 
 describe('tokenizeTranscript', () => {
-  it('splits English on whitespace, normalized', () => {
+  it('splits on whitespace, normalized', () => {
     expect(tokenizeTranscript('Hello brave New World.')).toEqual(['hello', 'brave', 'new', 'world'])
   })
 
-  it('splits Chinese per character', () => {
-    expect(tokenizeTranscript('今天天气很好')).toEqual(['今', '天', '天', '气', '很', '好'])
-  })
-
-  it('handles mixed text and drops pure-punctuation pieces', () => {
-    expect(tokenizeTranscript('我们的 React 项目！')).toEqual(['我', '们', '的', 'react', '项', '目'])
+  it('drops pure-punctuation pieces', () => {
+    expect(tokenizeTranscript('well — the launch!')).toEqual(['well', 'the', 'launch'])
   })
 })
 
-describe('createCursorMatcher — English', () => {
+describe('createCursorMatcher', () => {
   const tokens = scriptTokens('The quick brown fox jumps over the lazy dog')
 
   it('advances the cursor on an exact reading', () => {
@@ -112,54 +107,6 @@ describe('createCursorMatcher — English', () => {
   })
 })
 
-describe('createCursorMatcher — Mandarin', () => {
-  const tokens = scriptTokens('今天天气很好 我们出去走走')
-
-  it('advances per character as partials grow', () => {
-    const m = createCursorMatcher(tokens)
-    let pos = m.feed(1, '今天')
-    expect(pos.matchedCount).toBe(2)
-    pos = m.feed(1, '今天天气')
-    expect(pos.matchedCount).toBe(4)
-    pos = m.feed(1, '今天天气很好我们')
-    expect(pos.matchedCount).toBe(8)
-  })
-
-  it('tolerates a skipped character', () => {
-    const m = createCursorMatcher(tokens)
-    const pos = m.feed(1, '今天气') // reader dropped the second 天
-    expect(pos.matchedCount).toBe(4)
-  })
-
-  it('ignores Mandarin filler words', () => {
-    const m = createCursorMatcher(tokens)
-    const pos = m.feed(1, '今天 嗯 天气')
-    // 嗯 is not in the script; cursor still lands after 天气
-    expect(pos.matchedCount).toBe(4)
-  })
-})
-
-describe('createCursorMatcher — mixed language', () => {
-  const tokens = scriptTokens('我们的React项目 launches 今天 stay tuned')
-
-  it('tracks across script switches', () => {
-    const m = createCursorMatcher(tokens)
-    let pos = m.feed(1, '我们的 react')
-    expect(pos.matchedCount).toBe(4)
-    pos = m.feed(1, '我们的 react 项目 launches')
-    expect(pos.matchedCount).toBe(7)
-    pos = m.feed(1, '我们的 react 项目 launches 今天 stay tuned')
-    expect(pos.done).toBe(true)
-  })
-
-  it('absorbs an untranscribed English word inside a Chinese session', () => {
-    const m = createCursorMatcher(tokens)
-    // zh-CN recognizer garbles 'launches' → no match; next Chinese chars recover
-    const pos = m.feed(1, '我们的 react 项目 launch us 今天')
-    expect(pos.matchedCount).toBe(9) // through 今天
-  })
-})
-
 describe('createCursorMatcher — sessions and reset', () => {
   const tokens = scriptTokens('one two three four five six')
 
@@ -176,30 +123,5 @@ describe('createCursorMatcher — sessions and reset', () => {
     const pos = m.reset()
     expect(pos.matchedCount).toBe(0)
     expect(tokens[pos.cursorTokenIndex].text).toBe('one')
-  })
-})
-
-// ── WS6: language mismatch detection ───────────────────────
-import { languageMismatchMessage } from '../speech'
-
-describe('languageMismatchMessage', () => {
-  const en = 'the quick brown fox jumps over the lazy dog near the bridge'
-  const zh = '今天天气很好我们出去走走慢慢来大家一起加油'
-  const mixed = '我们的React项目 launches today 大家好 stay tuned 谢谢大家'
-
-  it('flags an English script with 中文 tracking', () => {
-    expect(languageMismatchMessage(en, 'zh-CN')).toMatch(/English/)
-  })
-  it('flags a Chinese script with English tracking', () => {
-    expect(languageMismatchMessage(zh, 'en-US')).toMatch(/Chinese/)
-  })
-  it('accepts matched and mixed scripts', () => {
-    expect(languageMismatchMessage(en, 'en-US')).toBe('')
-    expect(languageMismatchMessage(zh, 'zh-CN')).toBe('')
-    expect(languageMismatchMessage(mixed, 'en-US')).toBe('')
-    expect(languageMismatchMessage(mixed, 'zh-CN')).toBe('')
-  })
-  it('stays quiet on tiny scripts', () => {
-    expect(languageMismatchMessage('hi', 'zh-CN')).toBe('')
   })
 })

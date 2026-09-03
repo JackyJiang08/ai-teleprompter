@@ -3,7 +3,7 @@ import { tokenizeDoc } from '../lib/tokenizer'
 import { useAppStore } from '../store'
 import { API } from '../lib/api'
 import { createMicEngine, SPEEDS, SCROLL_SPEED_BASE } from '../lib/mic'
-import { createSpeechTracker, languageMismatchMessage } from '../lib/speech'
+import { createSpeechTracker } from '../lib/speech'
 
 // When word tracking drives the scroll, the current word is eased toward
 // this fraction of the viewport height (the "reading line").
@@ -85,7 +85,9 @@ export default function ReadView() {
     setRecognition({ engine: 'speech', status: 'starting', message: '', cursorTokenIndex: firstWord })
 
     const tracker = createSpeechTracker({
-      locale: configRef.current.speechLang || 'en-US',
+      // English-only scope: recognition always runs en-US. The sidecar keeps
+      // its --locale parameter for future use, but no UI selects another.
+      locale: 'en-US',
       tokens,
       scriptText,
       onDebug: trackDebug ? (msg) => {
@@ -242,16 +244,6 @@ export default function ReadView() {
     }
     rafRef.current = requestAnimationFrame(loop)
 
-    // Language sanity check: a clear script/recognition-language mismatch
-    // stalls tracking silently, so surface it here and in Settings. The
-    // empty-string call clears a stale notice.
-    const wantSpeechEarly = configRef.current.wordTracking !== false && !!window.__TAURI__
-    if (wantSpeechEarly) {
-      const mismatch = languageMismatchMessage(scriptText, configRef.current.speechLang || 'en-US')
-      API.setSpeechNotice(mismatch)
-      if (mismatch) setMicStatus('Language mismatch — see Settings')
-    }
-
     // Start recognition: word tracking when enabled (and running inside
     // Tauri), otherwise the frequency-based VAD engine
     const wantSpeech = configRef.current.wordTracking !== false && !!window.__TAURI__
@@ -384,7 +376,7 @@ export default function ReadView() {
                   color: token.color || undefined,
                 }}
               >
-                {token.text}{token.spaceAfter === false ? '' : ' '}
+                {token.text}{' '}
               </span>
             )
           }) : scriptText}
