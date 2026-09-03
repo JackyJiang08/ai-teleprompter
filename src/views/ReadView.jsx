@@ -31,8 +31,10 @@ export default function ReadView() {
   )
   const [fontSize, setFontSize] = useState(config.fontSize || 16)
   const [micStatus, setMicStatus] = useState('Waiting…')
-  // Word-tracking cursor for rendering: active + token index of next expected word
-  const [track, setTrack] = useState({ active: false, cursor: -1, done: false })
+  // Word-tracking cursor for rendering: `cursor` is the provisional display
+  // position (highlighted), `committed` the confirmed position (everything
+  // before it renders as spoken).
+  const [track, setTrack] = useState({ active: false, cursor: -1, committed: -1, done: false })
   // Dev-only tracking-quality overlay (?trackdebug=1): raw partials vs
   // matched position, for debugging recognition/matcher behavior
   const trackDebug = new URLSearchParams(window.location.search).has('trackdebug')
@@ -53,7 +55,7 @@ export default function ReadView() {
   const firedMarkers = useRef(new Set()) // indices already fired
   const micEngineRef = useRef(null)
   const speechTrackerRef = useRef(null)
-  const trackRef = useRef({ active: false, cursor: -1, done: false })
+  const trackRef = useRef({ active: false, cursor: -1, committed: -1, done: false })
   const silenceTimer = useRef(null)
 
   // Keep refs in sync
@@ -81,7 +83,7 @@ export default function ReadView() {
 
   function startSpeechTracker() {
     const firstWord = tokens.findIndex(t => t.type === 'word')
-    setTrackBoth({ active: true, cursor: firstWord, done: firstWord === -1 })
+    setTrackBoth({ active: true, cursor: firstWord, committed: firstWord, done: firstWord === -1 })
     setRecognition({ engine: 'speech', status: 'starting', message: '', cursorTokenIndex: firstWord })
 
     const tracker = createSpeechTracker({
@@ -99,7 +101,12 @@ export default function ReadView() {
         }
       } : undefined,
       onUpdate: (pos) => {
-        setTrackBoth({ active: true, cursor: pos.cursorTokenIndex, done: pos.done })
+        setTrackBoth({
+          active: true,
+          cursor: pos.provisionalTokenIndex ?? pos.cursorTokenIndex,
+          committed: pos.cursorTokenIndex,
+          done: pos.done,
+        })
         isSpeakingRef.current = pos.speaking
         setIsSpeaking(pos.speaking)
         setRecognition({
@@ -118,7 +125,7 @@ export default function ReadView() {
       onFallback: (message) => {
         // Word tracking unavailable → frequency-based activation, old behavior
         speechTrackerRef.current = null
-        setTrackBoth({ active: false, cursor: -1, done: false })
+        setTrackBoth({ active: false, cursor: -1, committed: -1, done: false })
         setRecognition({ engine: 'vad', status: 'error', message })
         setMicStatus('Voice detection')
         startVadEngine()
@@ -254,7 +261,7 @@ export default function ReadView() {
       // spoken/current/upcoming word states without a live recognizer
       const wordIdxs = tokens.map((t, i) => (t.type === 'word' ? i : -1)).filter(i => i >= 0)
       const cursor = wordIdxs[Math.floor(wordIdxs.length * 0.4)] ?? -1
-      setTrackBoth({ active: true, cursor, done: false })
+      setTrackBoth({ active: true, cursor, committed: cursor, done: false })
       setMicStatus('Tracking')
     } else if (wantSpeech && tokens.some(t => t.type === 'word')) {
       startSpeechTracker()
@@ -325,10 +332,12 @@ export default function ReadView() {
 
   const micRingClass = `mic-ring${isSpeaking ? '' : ' paused'}`
 
-  // Word-tracking display state for a token index: '' | 'spoken' | 'current'
+  // Word-tracking display state for a token index: '' | 'spoken' | 'current'.
+  // Dimming follows the COMMITTED cursor (certain); the highlight follows the
+  // PROVISIONAL cursor (the tentative tail of the latest partial).
   function tokenTrackClass(i) {
     if (!track.active) return ''
-    if (track.done || i < track.cursor) return ' tok-spoken'
+    if (track.done || (track.committed >= 0 && i < track.committed)) return ' tok-spoken'
     if (i === track.cursor) return ' tok-current'
     return ''
   }

@@ -13,7 +13,10 @@
 // customized language model from it on macOS 14+ (recognition biased toward
 // the exact words being read; silent fallback elsewhere).
 //
-// onUpdate({ cursorTokenIndex, matchedCount, total, done, confidence, speaking })
+// onUpdate({ cursorTokenIndex, provisionalTokenIndex, matchedCount,
+//            provisionalCount, total, done, confidence, speaking })
+//   cursorTokenIndex marks the committed position (dim everything before
+//   it); provisionalTokenIndex is the display cursor to highlight.
 // onStatus(status, message) — 'starting' | 'listening' | 'error'
 // onFallback(message) — unrecoverable: caller should switch to the
 //                       frequency-based VAD engine.
@@ -74,7 +77,9 @@ export function createSpeechTracker({ locale, tokens, scriptText, trickyWords, o
         break
       case 'partial':
       case 'final':
-        emitUpdate(matcher.feed(msg.session, msg.text), msg.confidence)
+        // Pass the whole message: the matcher uses per-word timestamps for
+        // stability gating and falls back to the flat text when absent.
+        emitUpdate(matcher.feed(msg.session, msg), msg.confidence)
         break
       case 'error':
         if (msg.fatal) {
