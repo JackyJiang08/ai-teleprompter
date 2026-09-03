@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { EFFORT_LABELS, EFFORT_LEVELS, PROVIDER_ORDER, PROVIDERS } from '../lib/ai'
 
 const tauriInvoke = window.__TAURI__?.core?.invoke ?? (() => Promise.resolve(null))
 const tauriListen = window.__TAURI__?.event?.listen ?? (() => Promise.resolve(() => {}))
@@ -21,10 +22,18 @@ const API = {
   hasAiKey:       () => tauriInvoke('has_ai_key'),
 }
 
-const AI_PROVIDERS = [
-  { id: '',          label: 'Off' },
-  { id: 'anthropic', label: 'Claude API' },
-  { id: 'local',     label: 'Local' },
+const AI_BADGE = {
+  checking: 'Checking…',
+  available: 'Available',
+  not_installed: 'Not installed',
+  not_logged_in: 'Not logged in',
+  not_configured: 'No API key',
+  not_running: 'Not running',
+}
+
+const POLICY_LINKS = [
+  { label: 'Anthropic policy', url: 'https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan' },
+  { label: 'OpenAI policy', url: 'https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan' },
 ]
 
 function speechStatusText(v) {
@@ -63,10 +72,13 @@ export default function SettingsView() {
   const [speechStatus, setSpeechStatus] = useState(null)
   const [speechNotice, setSpeechNotice] = useState('')
   const [aiProvider, setAiProvider] = useState('')
-  const [aiModel, setAiModel] = useState('')
+  const [aiPrefs, setAiPrefs] = useState({})
+  const [aiDetect, setAiDetect] = useState({})
+  const [aiModel, setAiModel] = useState('') // legacy single-model field (fallback)
   const [aiLocalUrl, setAiLocalUrl] = useState('http://localhost:11434')
   const [aiKeyInput, setAiKeyInput] = useState('')
   const [hasAiKey, setHasAiKey] = useState(false)
+  const [customModel, setCustomModel] = useState(false)
   const [meterPct, setMeterPct] = useState(0)
   const [meterActive, setMeterActive] = useState(false)
 
@@ -113,6 +125,7 @@ export default function SettingsView() {
     API.getSpeechNotice().then(v => setSpeechNotice(v || ''))
     API.onSpeechNotice(v => setSpeechNotice(v || ''))
     API.hasAiKey().then(v => setHasAiKey(!!v))
+    refreshAiDetection()
     API.onSpeechMsg(v => {
       if (!v || !v.type) return
       if (v.type === 'partial' || v.type === 'final') return
@@ -158,8 +171,18 @@ export default function SettingsView() {
     if (c.wordTracking != null) setWordTracking(!!c.wordTracking)
     if (c.trackingHints !== undefined) setTrackingHints(c.trackingHints)
     if (c.aiProvider !== undefined) setAiProvider(c.aiProvider)
+    if (c.aiPrefs && typeof c.aiPrefs === 'object') setAiPrefs(c.aiPrefs)
     if (c.aiModel !== undefined)    setAiModel(c.aiModel)
     if (c.aiLocalUrl)   setAiLocalUrl(c.aiLocalUrl)
+  }
+
+  // Live provider detection for the badges (CLIs, key, local server)
+  function refreshAiDetection() {
+    for (const id of PROVIDER_ORDER) {
+      setAiDetect(d => ({ ...d, [id]: { state: 'checking' } }))
+      PROVIDERS[id].detect().then(res =>
+        setAiDetect(d => ({ ...d, [id]: res || { state: 'error' } })))
+    }
   }
 
   async function populateMics() {
@@ -261,7 +284,24 @@ export default function SettingsView() {
 
   function handleAiProvider(id) {
     setAiProvider(id)
+    setCustomModel(false)
     API.setConfig({ aiProvider: id })
+  }
+
+  // Per-provider model/effort, persisted as one aiPrefs object.
+  function prefFor(p) {
+    const base = aiPrefs[p] || {}
+    // Legacy fallback: pre-2.1 configs stored one model in aiModel.
+    if (base.model === undefined && aiModel && (p === 'anthropic-api' || p === 'ollama')) {
+      return { ...base, model: aiModel }
+    }
+    return base
+  }
+
+  function setPref(p, patch) {
+    const next = { ...aiPrefs, [p]: { ...prefFor(p), ...patch } }
+    setAiPrefs(next)
+    API.setConfig({ aiPrefs: next })
   }
 
   async function handleSaveAiKey() {
@@ -415,30 +455,98 @@ export default function SettingsView() {
 
           <Divider />
 
-          {/* Prepare with AI */}
+          {/* Prepare with AI — provider list with live detection badges */}
           <div className="s-row s-col">
-            <span className="s-label">Prepare with AI</span>
-            <div className="s-mode-group">
-              {AI_PROVIDERS.map(p => (
-                <button
-                  key={p.id}
-                  className={`s-mode-btn${aiProvider === p.id ? ' active' : ''}`}
-                  onClick={() => handleAiProvider(p.id)}
-                >{p.label}</button>
-              ))}
+            <div className="s-provider-head">
+              <span className="s-label">Prepare with AI</span>
+              <button className="s-mode-btn" onClick={refreshAiDetection} title="Re-run provider detection">↻</button>
+            </div>
+            <div className="s-provider-list">
+              <button
+                className={`s-provider${aiProvider === '' ? ' active' : ''}`}
+                onClick={() => handleAiProvider('')}
+              >
+                <span className="s-provider-name">Off</span>
+              </button>
+              {PROVIDER_ORDER.map(id => {
+                const det = aiDetect[id] || {}
+                const ok = det.state === 'available'
+                return (
+                  <button
+                    key={id}
+                    className={`s-provider${aiProvider === id ? ' active' : ''}`}
+                    onClick={() => handleAiProvider(id)}
+                  >
+                    <span className="s-provider-name">{PROVIDERS[id].label}</span>
+                    <span className={`s-badge ${ok ? 'ok' : 'warn'}`}>{AI_BADGE[det.state] || '…'}</span>
+                    {!ok && PROVIDERS[id].instructions?.[det.state] && (
+                      <span className="s-provider-hint">{PROVIDERS[id].instructions[det.state]}</span>
+                    )}
+                  </button>
+                )
+              })}
             </div>
           </div>
-          {aiProvider === 'anthropic' && <>
-            <div className="s-row s-col">
-              <span className="s-label">Model</span>
-              <input
-                className="s-input"
-                placeholder="claude-opus-5 (default)"
-                value={aiModel}
-                onChange={e => setAiModel(e.target.value)}
-                onBlur={() => API.setConfig({ aiModel: aiModel.trim() })}
-              />
-            </div>
+
+          {/* Unified model + effort selector, persisted per provider */}
+          {aiProvider && PROVIDERS[aiProvider] && (() => {
+            const def = PROVIDERS[aiProvider]
+            const prefs = prefFor(aiProvider)
+            const models = def.listModels()
+            const inList = models.includes(prefs.model || '')
+            const showCustom = customModel || (!inList && (prefs.model || '') !== '') || models.length === 0
+            const effortOk = def.supportsEffort(prefs.model)
+            return (<>
+              <div className="s-row s-col">
+                <span className="s-label">Model</span>
+                {!showCustom ? (
+                  <select
+                    className="s-select"
+                    value={prefs.model || ''}
+                    onChange={e => {
+                      if (e.target.value === '__custom__') setCustomModel(true)
+                      else setPref(aiProvider, { model: e.target.value })
+                    }}
+                  >
+                    {models.map(m => <option key={m || 'default'} value={m}>{m === '' ? 'Default' : m}</option>)}
+                    <option value="__custom__">Custom…</option>
+                  </select>
+                ) : (
+                  <input
+                    className="s-input"
+                    placeholder={aiProvider === 'ollama' ? 'llama3.1 (required)' : 'model name — empty for default'}
+                    value={prefs.model || ''}
+                    onChange={e => setPref(aiProvider, { model: e.target.value })}
+                  />
+                )}
+              </div>
+              <div className="s-row s-col">
+                <span className="s-label">Effort</span>
+                <div
+                  className="s-mode-group s-effort-group"
+                  title={effortOk ? 'Higher effort thinks longer and costs more of your plan or budget' : `${def.label} does not take an effort setting — requests run at the provider's default`}
+                >
+                  {EFFORT_LEVELS.map(l => (
+                    <button
+                      key={l}
+                      disabled={!effortOk}
+                      className={`s-mode-btn${(prefs.effort || '') === l ? ' active' : ''}`}
+                      onClick={() => setPref(aiProvider, { effort: prefs.effort === l ? '' : l })}
+                    >{EFFORT_LABELS[l]}</button>
+                  ))}
+                </div>
+                {!effortOk && (
+                  <span className="s-note">
+                    {aiProvider === 'ollama'
+                      ? 'Local models do not take an effort setting.'
+                      : 'This model does not take an effort setting.'}
+                  </span>
+                )}
+              </div>
+            </>)
+          })()}
+
+          {aiProvider === 'anthropic-api' && (
             <div className="s-row s-col">
               <span className="s-label">API Key{hasAiKey ? ' · saved in Keychain ✓' : ''}</span>
               <div className="s-key-row">
@@ -459,8 +567,8 @@ export default function SettingsView() {
                 at console.anthropic.com.
               </span>
             </div>
-          </>}
-          {aiProvider === 'local' && <>
+          )}
+          {aiProvider === 'ollama' && (
             <div className="s-row s-col">
               <span className="s-label">Server URL</span>
               <input
@@ -470,27 +578,27 @@ export default function SettingsView() {
                 onChange={e => setAiLocalUrl(e.target.value)}
                 onBlur={() => API.setConfig({ aiLocalUrl: aiLocalUrl.trim() })}
               />
-            </div>
-            <div className="s-row s-col">
-              <span className="s-label">Model (required)</span>
-              <input
-                className="s-input"
-                placeholder="llama3.1"
-                value={aiModel}
-                onChange={e => setAiModel(e.target.value)}
-                onBlur={() => API.setConfig({ aiModel: aiModel.trim() })}
-              />
               <span className="s-note">
                 Any OpenAI-compatible server, e.g. Ollama (`ollama serve`, then
                 `ollama pull` a model). Runs fully offline.
               </span>
             </div>
-          </>}
+          )}
           {aiProvider !== '' && (
             <div className="s-row">
               <span className="s-note">
-                Your script is sent to the provider only when you click
-                ✦ Prepare in the editor — never automatically.
+                Your script text is sent to the selected provider for rewriting
+                — only when you click ✦ Prepare, never automatically.
+                Subscription providers run through the official CLI on your own
+                plan's usage limits. Vendor policies on subscription use in
+                third-party apps changed several times in 2026 and may change
+                again: see{' '}
+                <a href="#" onClick={e => { e.preventDefault(); tauriInvoke('open_url', { url: POLICY_LINKS[0].url }) }}>
+                  {POLICY_LINKS[0].label}
+                </a>{' '}and{' '}
+                <a href="#" onClick={e => { e.preventDefault(); tauriInvoke('open_url', { url: POLICY_LINKS[1].url }) }}>
+                  {POLICY_LINKS[1].label}
+                </a>.
               </span>
             </div>
           )}

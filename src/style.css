@@ -582,7 +582,14 @@ body.mode-classic .idle-quit { opacity: 1; }
   font-size: 10.5px; line-height: 1.5;
   color: var(--text-secondary);
 }
-.setup-options { display: flex; gap: 8px; }
+.setup-options { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.setup-badge {
+  margin-left: 6px; font-size: 8px; padding: 1px 6px; border-radius: 999px;
+  font-weight: 500; vertical-align: 1px;
+}
+.setup-badge.ok { color: #22c55e; border: 1px solid #22c55e66; }
+.setup-badge.warn { color: #f59e0b; border: 1px solid #f59e0b66; }
+.ai-cancel { margin-left: 10px; }
 .setup-card {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column; gap: 3px;

@@ -1,34 +1,80 @@
 // SPDX-License-Identifier: MIT
 // Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // Guided one-time setup for Prepare with AI, shown inline in the editor the
-// first time ✦ Prepare is clicked without a configured provider. Explains the
-// two provider options, validates them with a real "Test connection" request
-// (ai_test), saves on success, and hands control back so the originally
-// requested Prepare continues automatically.
+// first time ✦ Prepare is clicked without a working provider. Four ways in,
+// subscriptions first: Claude subscription (Claude Code CLI), ChatGPT
+// subscription (Codex CLI), Anthropic API key, local Ollama. CLI providers
+// are detected live (installed? logged in?); the key/local providers are
+// validated with a real "Test connection" request (ai_test). On success the
+// choice is saved and the originally requested Prepare continues.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { API } from '../lib/api'
-import { mapAiError } from '../lib/ai'
+import { mapAiError, PROVIDER_ORDER, PROVIDERS } from '../lib/ai'
+
+const CARD_DESC = {
+  'claude-code': 'Use your existing Claude plan through the official Claude Code CLI — no API key. The app only runs the CLI you are already signed into.',
+  codex: 'Use your existing ChatGPT plan through the official Codex CLI — no API key. The app only runs the CLI you are already signed into.',
+  'anthropic-api': "Anthropic's API with your own key from console.anthropic.com, stored only in the macOS Keychain. Pay-per-use.",
+  ollama: 'Any OpenAI-compatible server on your Mac — fully offline. Run `ollama serve`, then `ollama pull` a model.',
+}
+
+const CARD_TITLE = {
+  'claude-code': 'Claude subscription',
+  codex: 'ChatGPT subscription',
+  'anthropic-api': 'Claude API key',
+  ollama: 'Local (Ollama)',
+}
+
+const BADGE = {
+  checking: 'Checking…',
+  available: 'Available',
+  not_installed: 'Not installed',
+  not_logged_in: 'Not logged in',
+  not_configured: 'No API key',
+  not_running: 'Not running',
+}
 
 export default function AiSetupPanel({ onCancel, onReady }) {
-  const [provider, setProvider] = useState('anthropic')
+  const [provider, setProvider] = useState('claude-code')
   const [key, setKey] = useState('')
   const [model, setModel] = useState('')
   const [localUrl, setLocalUrl] = useState('http://localhost:11434')
   // 'idle' | 'testing' | 'ok' | { error }
   const [status, setStatus] = useState('idle')
+  const [detect, setDetect] = useState({})
 
+  function refreshDetection() {
+    for (const id of ['claude-code', 'codex']) {
+      setDetect(d => ({ ...d, [id]: { state: 'checking' } }))
+      PROVIDERS[id].detect().then(res =>
+        setDetect(d => ({ ...d, [id]: res || { state: 'error' } })))
+    }
+  }
+  useEffect(() => { refreshDetection() }, [])
+
+  const isCli = provider === 'claude-code' || provider === 'codex'
+  const cliState = detect[provider]?.state
+
+  // CLI providers: nothing to type — confirm the detected CLI and go.
+  async function useCliProvider() {
+    if (cliState !== 'available') return
+    await API.setConfig({ aiProvider: provider })
+    setStatus('ok')
+    onReady?.(provider)
+  }
+
+  // Key/local providers: validate the typed values first (ai_test), then save.
   async function testAndContinue() {
     if (status === 'testing') return
     setStatus('testing')
     try {
       await API.aiTest({ provider, model: model.trim(), localUrl: localUrl.trim(), key: key.trim() })
-      // Validated — persist: key to the Keychain, the rest to config
-      if (provider === 'anthropic' && key.trim()) await API.setAiKey(key.trim())
+      if (provider === 'anthropic-api' && key.trim()) await API.setAiKey(key.trim())
       await API.setConfig({
         aiProvider: provider,
         aiModel: model.trim(),
-        ...(provider === 'local' ? { aiLocalUrl: localUrl.trim() } : {}),
+        ...(provider === 'ollama' ? { aiLocalUrl: localUrl.trim() } : {}),
       })
       setStatus('ok')
       onReady?.(provider)
@@ -51,29 +97,43 @@ export default function AiSetupPanel({ onCancel, onReady }) {
         </p>
 
         <div className="setup-options">
-          <button
-            className={`setup-card${provider === 'anthropic' ? ' active' : ''}`}
-            onClick={() => { setProvider('anthropic'); setStatus('idle') }}
-          >
-            <span className="setup-card-title">Claude API</span>
-            <span className="setup-card-desc">
-              Anthropic's hosted models — best quality. Needs an API key from
-              console.anthropic.com, stored only in the macOS Keychain.
-            </span>
-          </button>
-          <button
-            className={`setup-card${provider === 'local' ? ' active' : ''}`}
-            onClick={() => { setProvider('local'); setStatus('idle') }}
-          >
-            <span className="setup-card-title">Local (Ollama)</span>
-            <span className="setup-card-desc">
-              Any OpenAI-compatible server on your Mac — fully offline. Run
-              `ollama serve`, then `ollama pull` a model.
-            </span>
-          </button>
+          {PROVIDER_ORDER.map(id => (
+            <button
+              key={id}
+              className={`setup-card${provider === id ? ' active' : ''}`}
+              onClick={() => { setProvider(id); setStatus('idle') }}
+            >
+              <span className="setup-card-title">
+                {CARD_TITLE[id]}
+                {(id === 'claude-code' || id === 'codex') && BADGE[detect[id]?.state] && (
+                  <span className={`setup-badge ${detect[id].state === 'available' ? 'ok' : 'warn'}`}>
+                    {BADGE[detect[id].state]}
+                  </span>
+                )}
+              </span>
+              <span className="setup-card-desc">{CARD_DESC[id]}</span>
+            </button>
+          ))}
         </div>
 
-        {provider === 'anthropic' ? (
+        {isCli ? (
+          <div className="setup-fields">
+            {cliState === 'available' && (
+              <span className="setup-status ok">
+                {PROVIDERS[provider].via} detected{detect[provider]?.version ? ` (${detect[provider].version})` : ''} and signed in.
+              </span>
+            )}
+            {PROVIDERS[provider].instructions[cliState] && (
+              <span className="setup-status error">
+                {PROVIDERS[provider].instructions[cliState]}
+              </span>
+            )}
+            <span className="setup-status">
+              Runs on your own plan's usage. The CLI is run with tools disabled
+              in an empty folder; your key and login stay with the CLI.
+            </span>
+          </div>
+        ) : provider === 'anthropic-api' ? (
           <div className="setup-fields">
             <input
               className="setup-input"
@@ -109,10 +169,24 @@ export default function AiSetupPanel({ onCancel, onReady }) {
         )}
 
         <div className="setup-actions">
-          <button className="pill-btn accent" onClick={testAndContinue} disabled={status === 'testing'}>
-            {status === 'testing' ? 'Testing…' : status === 'ok' ? '✓ Connected' : 'Test connection'}
-          </button>
-          {status === 'ok' && <span className="setup-status ok">Connected — preparing your script…</span>}
+          {isCli ? (
+            <>
+              <button
+                className="pill-btn accent"
+                onClick={useCliProvider}
+                disabled={cliState !== 'available'}
+                title={cliState !== 'available' ? 'Install and sign in to the CLI first' : undefined}
+              >
+                {status === 'ok' ? '✓ Ready' : 'Use this provider'}
+              </button>
+              <button className="pill-btn ghost" onClick={refreshDetection}>Re-check</button>
+            </>
+          ) : (
+            <button className="pill-btn accent" onClick={testAndContinue} disabled={status === 'testing'}>
+              {status === 'testing' ? 'Testing…' : status === 'ok' ? '✓ Connected' : 'Test connection'}
+            </button>
+          )}
+          {status === 'ok' && <span className="setup-status ok">Ready — preparing your script…</span>}
           {typeof status === 'object' && <span className="setup-status error">{status.error}</span>}
         </div>
       </div>

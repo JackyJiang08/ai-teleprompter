@@ -142,6 +142,28 @@ body {
   transition: all 0.15s; white-space: nowrap;
 }
 .s-mode-btn.active { background: var(--s-accent); color: #fff; }
+.s-mode-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── AI provider list ── */
+.s-provider-head { display: flex; width: 100%; align-items: center; justify-content: space-between; }
+.s-provider-list { display: flex; flex-direction: column; gap: 4px; width: 100%; }
+.s-provider {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 6px 8px; border-radius: 6px; text-align: left;
+  background: var(--s-item-hover); border: 1px solid var(--s-divider);
+  color: var(--s-text); cursor: pointer; font: inherit; width: 100%;
+}
+.s-provider.active { border-color: var(--s-accent); }
+.s-provider-name { font-size: 10px; font-weight: 600; }
+.s-badge {
+  margin-left: auto; font-size: 8px; padding: 1px 6px; border-radius: 999px;
+  font-family: 'DM Mono', monospace;
+}
+.s-badge.ok { color: #22c55e; border: 1px solid #22c55e66; }
+.s-badge.warn { color: #f59e0b; border: 1px solid #f59e0b66; }
+.s-provider-hint { flex-basis: 100%; font-size: 8px; color: var(--s-secondary); line-height: 1.4; }
+.s-effort-group { flex-wrap: wrap; }
+.s-note a { color: var(--s-accent); text-decoration: none; }
 
 /* ── Mic select ── */
 .s-select {
