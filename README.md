@@ -84,10 +84,14 @@ Paste a long raw script — an email draft, an essay, a speech — and click **�
 - **Cue markers** (`[PAUSE]` / `[SLOW]` / `[BREATHE]`) inserted sparingly at rhetorically appropriate points, using the app's existing marker convention.
 - **You stay in control** — the result appears in a side-by-side review (original vs prepared). Edit the prepared text, then Accept or Reject. Accepting saves your original script to the library first, so it is never silently overwritten.
 
-Two providers, selectable in Settings → Prepare with AI:
+Four providers, selectable in Settings → Prepare with AI — **no API key needed if you already pay for Claude or ChatGPT**:
 
-- **Claude API** — bring your own Anthropic API key ([console.anthropic.com](https://console.anthropic.com)). The key is stored in the **macOS Keychain**, never in plaintext config files or this repo. Model defaults to `claude-opus-5`.
-- **Local (offline)** — any OpenAI-compatible endpoint, e.g. [Ollama](https://ollama.com) (`ollama serve`, set the model name in settings). Nothing leaves your machine.
+- **Claude subscription** — uses your existing Claude plan through the official [Claude Code CLI](https://claude.com/claude-code) (`claude -p`) you have installed and signed into. The app never touches your login or tokens — it only runs the official CLI, with tools disabled, in an empty folder.
+- **ChatGPT subscription** — same idea through the official [OpenAI Codex CLI](https://developers.openai.com/codex) (`codex exec`, `npm i -g @openai/codex`, then `codex login`).
+- **Claude API key** — bring your own Anthropic API key ([console.anthropic.com](https://console.anthropic.com)). The key is stored in the **macOS Keychain**, never in plaintext config files or this repo. Model defaults to `claude-opus-5`.
+- **Ollama (local)** — any OpenAI-compatible endpoint, e.g. [Ollama](https://ollama.com) (`ollama serve`, set the model name in settings). Nothing leaves your machine.
+
+Settings shows live detection for each provider (Available / Not installed / Not logged in), plus a unified **Model** picker and a four-tier **Effort** selector (Low / Medium / High / Extra high) where the provider supports it. Subscription providers consume your own plan's usage, and vendor policies on subscription use in third-party apps have changed several times in 2026 — the Settings panel links the current Anthropic and OpenAI policy pages.
 
 The feature is fully optional and off by default: with no provider configured the app behaves exactly as before, and the Prepare button just opens a guided one-time setup. AI calls happen **only** when you click Prepare — never automatically.
 

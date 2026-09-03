@@ -22,6 +22,26 @@ Teleprompter") and its scope narrows to English-only speech tracking.
   permissions (macOS asks again) — a one-time notice in the app explains
   this after the migration
 
+### Prepare with AI: subscriptions, models, and effort
+
+- Two new providers use an existing **Claude** or **ChatGPT subscription**
+  with no API key, by delegating to the official CLIs the user has already
+  installed and logged into (Claude Code `claude -p`, OpenAI Codex
+  `codex exec`). The app never reads or proxies credentials — the CLIs are
+  run with tools/sandbox disabled in an empty directory, with a timeout,
+  cancellation, and live Available / Not installed / Not logged in
+  detection in Settings
+- Unified per-provider **Model** picker (curated list + free-text
+  override) and four-tier **Effort** selector (Low / Medium / High /
+  Extra high), mapped to each provider's own mechanism (`--effort`,
+  `model_reasoning_effort`, `output_config.effort`) and disabled with an
+  explanation where unsupported (Ollama)
+- The guided setup grows to four cards, subscriptions first; Settings
+  states plainly that scripts go to the selected provider on Prepare only,
+  that subscription providers consume the user's own plan, and links the
+  vendors' (repeatedly changed) 2026 policies on third-party subscription
+  use
+
 ### English-only scope
 
 - The speech language selector is removed from Settings; word tracking
