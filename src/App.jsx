@@ -69,6 +69,7 @@ export default function App() {
         autoScroll:  cfg.autoScroll  ?? cfg.auto_scroll  ?? false,
         micDeviceId: cfg.micDeviceId ?? cfg.mic_device_id ?? 'default',
         wordTracking: cfg.wordTracking ?? cfg.word_tracking ?? true,
+        trackingHints: cfg.trackingHints ?? cfg.tracking_hints ?? '',
         aiProvider:   cfg.aiProvider   ?? cfg.ai_provider   ?? '',
         aiModel:      cfg.aiModel      ?? cfg.ai_model      ?? '',
         aiLocalUrl:   cfg.aiLocalUrl   ?? cfg.ai_local_url  ?? 'http://localhost:11434',
@@ -96,7 +97,7 @@ export default function App() {
       const patch = {}
       const keys = ['mode','theme','scrollSpeed','scroll_speed','opacity','threshold',
                     'autoScroll','auto_scroll','micDeviceId','mic_device_id','fontSize','font_size',
-                    'wordTracking','word_tracking',
+                    'wordTracking','word_tracking','trackingHints','tracking_hints',
                     'aiProvider','ai_provider','aiModel','ai_model','aiLocalUrl','ai_local_url']
       keys.forEach(k => { if (cfg[k] !== undefined) patch[k] = cfg[k] })
       // Normalise snake_case → camelCase
@@ -105,6 +106,7 @@ export default function App() {
       if (patch.mic_device_id !== undefined) { patch.micDeviceId  = patch.mic_device_id; delete patch.mic_device_id }
       if (patch.font_size     !== undefined) { patch.fontSize     = patch.font_size;     delete patch.font_size     }
       if (patch.word_tracking !== undefined) { patch.wordTracking = patch.word_tracking; delete patch.word_tracking }
+      if (patch.tracking_hints !== undefined) { patch.trackingHints = patch.tracking_hints; delete patch.tracking_hints }
       if (patch.ai_provider   !== undefined) { patch.aiProvider   = patch.ai_provider;   delete patch.ai_provider   }
       if (patch.ai_model      !== undefined) { patch.aiModel      = patch.ai_model;      delete patch.ai_model      }
       if (patch.ai_local_url  !== undefined) { patch.aiLocalUrl   = patch.ai_local_url;  delete patch.ai_local_url  }

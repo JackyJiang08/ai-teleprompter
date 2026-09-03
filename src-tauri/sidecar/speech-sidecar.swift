@@ -10,9 +10,13 @@
 //
 // Protocol (one JSON object per line on stdout):
 //   {"type":"ready","locale":"en-US","onDevice":true}
-//   {"type":"partial","session":1,"text":"hello world"}
-//   {"type":"final","session":1,"text":"hello world"}   // session then increments
+//   {"type":"partial","session":1,"text":"hello world",
+//    "words":[{"w":"hello","t":0.12,"d":0.31,"c":0.9}, …]}   // per-segment:
+//        substring, timestamp (s, from session audio start), duration (s),
+//        confidence (0..1). "text" stays for display/back-compat.
+//   {"type":"final","session":1,"text":"…","words":[…]}      // session then increments
 //   {"type":"error","code":"...","message":"...","fatal":true|false}
+// Every message additionally carries "t" (ms since epoch), added by emit().
 //
 // Fatal error codes: auth_denied, auth_restricted, locale_unavailable,
 // ondevice_unsupported, audio_error, recognizer_storm.
@@ -52,6 +56,15 @@ func fatalError(code: String, message: String) -> Never {
 //                     a customized language model (macOS 14+) that biases
 //                     recognition toward the exact words on screen. Silently
 //                     ignored when unsupported.
+// --contextual <path> newline-separated vocabulary (the script's non-stopword
+//                     words, prepared by the frontend); set as
+//                     contextualStrings on every recognition request — works
+//                     on all supported macOS versions, unlike the custom LM.
+// --tricky <path>     newline-separated user-supplied "tricky words": either
+//                     a bare word (boosted via contextualStrings + a
+//                     high-count LM phrase) or "word=phoneme phoneme …"
+//                     (X-SAMPA) which additionally registers a
+//                     CustomPronunciation in the custom LM (macOS 14+).
 // --audio-file <path> dev/measurement only: feed this audio file to the
 //                     recognizer at real-time pace instead of the microphone
 //                     (used by scripts/track-latency.mjs for deterministic
@@ -59,11 +72,55 @@ func fatalError(code: String, message: String) -> Never {
 var localeId = "en-US"
 var audioFilePath: String? = nil
 var scriptFilePath: String? = nil
+var contextualFilePath: String? = nil
+var trickyFilePath: String? = nil
 var args = CommandLine.arguments.dropFirst().makeIterator()
 while let a = args.next() {
     if a == "--locale", let v = args.next() { localeId = v }
     if a == "--script", let v = args.next() { scriptFilePath = v }
+    if a == "--contextual", let v = args.next() { contextualFilePath = v }
+    if a == "--tricky", let v = args.next() { trickyFilePath = v }
     if a == "--audio-file", let v = args.next() { audioFilePath = v }
+}
+
+// ── recognition vocabulary ─────────────────────────────────
+// Tricky words: user-maintained list from Settings (empty by default).
+// "word" boosts recognition; "word=phonemes" additionally supplies an
+// X-SAMPA pronunciation for the custom LM.
+struct TrickyEntry {
+    let grapheme: String
+    let phonemes: [String]
+}
+var trickyEntries: [TrickyEntry] = []
+if let path = trickyFilePath, let raw = try? String(contentsOfFile: path, encoding: .utf8) {
+    for line in raw.components(separatedBy: .newlines) {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        if trimmed.isEmpty { continue }
+        if let eq = trimmed.firstIndex(of: "=") {
+            let grapheme = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
+            let phonemes = String(trimmed[trimmed.index(after: eq)...])
+                .split(separator: " ").map(String.init)
+            if !grapheme.isEmpty { trickyEntries.append(TrickyEntry(grapheme: grapheme, phonemes: phonemes)) }
+        } else {
+            trickyEntries.append(TrickyEntry(grapheme: trimmed, phonemes: []))
+        }
+    }
+}
+
+// contextualStrings: tricky words first (highest value), then the script
+// vocabulary; deduplicated case-insensitively and capped at 100 entries
+// (Apple guidance for the contextualStrings API).
+let contextualCap = 100
+var contextualStrings: [String] = trickyEntries.map { $0.grapheme }
+if let path = contextualFilePath, let raw = try? String(contentsOfFile: path, encoding: .utf8) {
+    contextualStrings += raw.components(separatedBy: .newlines)
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+}
+var seenContextual = Set<String>()
+contextualStrings = contextualStrings.filter { seenContextual.insert($0.lowercased()).inserted }
+if contextualStrings.count > contextualCap {
+    contextualStrings = Array(contextualStrings.prefix(contextualCap))
 }
 
 // ── authorization ──────────────────────────────────────────
@@ -162,6 +219,11 @@ final class Pipeline: NSObject {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = true
         req.taskHint = .dictation
+        // Bias recognition toward the script's vocabulary on every request —
+        // available on all supported macOS versions (the custom LM is 14+).
+        if !contextualStrings.isEmpty {
+            req.contextualStrings = contextualStrings
+        }
         if #available(macOS 13.0, *) {
             req.addsPunctuation = false
         }
@@ -185,11 +247,19 @@ final class Pipeline: NSObject {
                 let confidence = segments.isEmpty
                     ? 0.0
                     : segments.map { Double($0.confidence) }.reduce(0, +) / Double(segments.count)
+                // Per-word data: the matcher needs each segment's substring,
+                // timestamp (s from session audio start), duration, and
+                // confidence for stability gating and alignment.
+                let words: [[String: Any]] = segments.map { seg in
+                    ["w": seg.substring, "t": seg.timestamp, "d": seg.duration, "c": Double(seg.confidence)]
+                }
                 if result.isFinal {
-                    emit(["type": "final", "session": current, "text": text, "confidence": confidence])
+                    emit(["type": "final", "session": current, "text": text,
+                          "confidence": confidence, "words": words])
                     self.rotateSession()
                 } else {
-                    emit(["type": "partial", "session": current, "text": text, "confidence": confidence])
+                    emit(["type": "partial", "session": current, "text": text,
+                          "confidence": confidence, "words": words])
                 }
             } else if let error = error {
                 // A canceled task (session already rotated, e.g. when the
@@ -254,7 +324,11 @@ emit(["type": "ready", "locale": localeId, "onDevice": true])
 @available(macOS 14.0, *)
 func buildCustomLM(scriptText: String, pipeline: Pipeline) async {
     do {
-        let digest = SHA256.hash(data: Data((scriptText + "|" + localeId).utf8))
+        // Hash covers everything that shapes the model: script, locale,
+        // tricky words, and a scheme version (bump on generation changes).
+        let trickyKey = trickyEntries.map { "\($0.grapheme)=\($0.phonemes.joined(separator: " "))" }
+            .joined(separator: "\n")
+        let digest = SHA256.hash(data: Data((scriptText + "|" + localeId + "|" + trickyKey + "|v2").utf8))
         let hash = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ai-teleprompter-lm", isDirectory: true)
@@ -263,19 +337,46 @@ func buildCustomLM(scriptText: String, pipeline: Pipeline) async {
         let lmURL = cacheDir.appendingPathComponent("\(hash).lm", isDirectory: true)
 
         if !FileManager.default.fileExists(atPath: assetURL.path) {
-            // One phrase per script line (edits change the hash → rebuild)
-            let phrases = scriptText
+            // One phrase per script line (edits change the hash → rebuild)…
+            let lines = scriptText
                 .components(separatedBy: .newlines)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
                 .prefix(500)
+            // …plus sliding 3–5-word n-grams at a lower count, so the model
+            // also learns local word ORDER (whole-line phrases alone bias
+            // vocabulary but not transitions). Capped to bound training time.
+            var ngrams: [String] = []
+            let ngramCap = 3000
+            outer: for line in lines {
+                let ws = line.split(separator: " ").map(String.init)
+                if ws.count < 3 { continue }
+                for n in 3...5 {
+                    if ws.count < n { break }
+                    for start in 0...(ws.count - n) {
+                        ngrams.append(ws[start..<(start + n)].joined(separator: " "))
+                        if ngrams.count >= ngramCap { break outer }
+                    }
+                }
+            }
+            let tricky = trickyEntries
             let data = SFCustomLanguageModelData(
                 locale: Locale(identifier: localeId),
                 identifier: "com.jackyjiang.ai-teleprompter.script",
-                version: "1.0"
+                version: "2.0"
             ) {
-                for phrase in phrases {
+                for phrase in lines {
                     SFCustomLanguageModelData.PhraseCount(phrase: String(phrase), count: 10)
+                }
+                for gram in ngrams {
+                    SFCustomLanguageModelData.PhraseCount(phrase: gram, count: 3)
+                }
+                for entry in tricky {
+                    SFCustomLanguageModelData.PhraseCount(phrase: entry.grapheme, count: 30)
+                }
+                for entry in tricky where !entry.phonemes.isEmpty {
+                    SFCustomLanguageModelData.CustomPronunciation(
+                        grapheme: entry.grapheme, phonemes: entry.phonemes)
                 }
             }
             try await data.export(to: assetURL)

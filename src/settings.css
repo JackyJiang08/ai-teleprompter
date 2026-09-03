@@ -194,6 +194,7 @@ body {
   outline: none;
 }
 .s-input:focus { border-color: var(--s-accent); }
+.s-textarea { resize: none; line-height: 1.5; outline: none; }
 .s-key-row { display: flex; gap: 6px; width: 100%; align-items: center; }
 .s-key-row .s-input { flex: 1; min-width: 0; }
 .s-status { font-size: 9px; line-height: 1.45; color: var(--s-secondary); font-family: 'DM Mono', monospace; }

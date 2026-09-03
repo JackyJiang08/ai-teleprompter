@@ -20,7 +20,7 @@
 // onDebug(msg) — every raw sidecar message (dev tracking-quality overlay)
 
 import { API } from './api'
-import { createCursorMatcher } from './matcher'
+import { buildContextualStrings, createCursorMatcher } from './matcher'
 
 const MAX_RESTARTS = 2
 const SPEAKING_HOLD_MS = 900
@@ -38,8 +38,13 @@ export function fallbackMessageFor(code, detail) {
   return FALLBACK_MESSAGES[code] || detail || 'Speech recognition unavailable — using voice-level detection.'
 }
 
-export function createSpeechTracker({ locale, tokens, scriptText, onUpdate, onStatus, onFallback, onDebug }) {
+export function createSpeechTracker({ locale, tokens, scriptText, trickyWords, onUpdate, onStatus, onFallback, onDebug }) {
   const matcher = createCursorMatcher(tokens)
+  // Recognition bias inputs: the script's non-stopword vocabulary
+  // (contextualStrings on every request) and the user's tricky-words list
+  // from Settings (contextual boost + custom-LM pronunciations).
+  const contextual = buildContextualStrings(scriptText)
+  const tricky = (trickyWords || '').trim()
   let unlisten = null
   let stopped = false
   let restarts = 0
@@ -84,7 +89,7 @@ export function createSpeechTracker({ locale, tokens, scriptText, onUpdate, onSt
         if (restarts < MAX_RESTARTS) {
           restarts++
           onStatus?.('starting', 'Speech engine restarting…')
-          API.startSpeech(locale, scriptText)
+          API.startSpeech(locale, scriptText, contextual, tricky)
         } else {
           fail(fallbackMessageFor('recognizer_storm'))
         }
@@ -99,7 +104,7 @@ export function createSpeechTracker({ locale, tokens, scriptText, onUpdate, onSt
     onStatus?.('starting', 'Starting speech recognition…')
     unlisten = await API.onSpeechMsg(handleMsg)
     try {
-      await API.startSpeech(locale, scriptText)
+      await API.startSpeech(locale, scriptText, contextual, tricky)
     } catch (e) {
       fail(fallbackMessageFor('audio_error', String(e)))
     }

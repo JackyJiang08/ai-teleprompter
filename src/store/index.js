@@ -14,6 +14,7 @@ export const useAppStore = create((set, get) => ({
     micDeviceId: 'default',
     theme: 'dark',
     wordTracking: true,
+    trackingHints: '',
     aiProvider: '',
     aiModel: '',
     aiLocalUrl: 'http://localhost:11434',

@@ -150,6 +150,10 @@ pub struct Config {
     pub theme: String,
     #[serde(default = "default_word_tracking")]
     pub word_tracking: bool,
+    // Newline-separated user-supplied "tricky words" for recognition biasing:
+    // "word" or "word=X-SAMPA phonemes". Empty by default.
+    #[serde(default)]
+    pub tracking_hints: String,
     #[serde(default)]
     pub ai_provider: String, // "" (off) | "anthropic" | "local"
     #[serde(default)]
@@ -179,6 +183,7 @@ impl Default for Config {
             mic_device_id: "default".to_string(),
             theme: "dark".to_string(),
             word_tracking: default_word_tracking(),
+            tracking_hints: String::new(),
             ai_provider: String::new(),
             ai_model: String::new(),
             ai_local_url: default_ai_local_url(),
@@ -512,6 +517,7 @@ fn set_config(app: AppHandle, state: State<AppState>, patch: serde_json::Value) 
     if let Some(v) = patch.get("micDeviceId").and_then(|v| v.as_str()) { cfg.mic_device_id = v.to_string(); }
     if let Some(v) = patch.get("theme").and_then(|v| v.as_str()) { cfg.theme = v.to_string(); }
     if let Some(v) = patch.get("wordTracking").and_then(|v| v.as_bool()) { cfg.word_tracking = v; }
+    if let Some(v) = patch.get("trackingHints").and_then(|v| v.as_str()) { cfg.tracking_hints = v.to_string(); }
     if let Some(v) = patch.get("aiProvider").and_then(|v| v.as_str()) { cfg.ai_provider = v.to_string(); }
     if let Some(v) = patch.get("aiModel").and_then(|v| v.as_str()) { cfg.ai_model = v.to_string(); }
     if let Some(v) = patch.get("aiLocalUrl").and_then(|v| v.as_str()) { cfg.ai_local_url = v.to_string(); }
@@ -744,6 +750,8 @@ fn start_speech(
     state: State<AppState>,
     locale: String,
     script_text: Option<String>,
+    contextual: Option<Vec<String>>,
+    tricky: Option<String>,
 ) -> Result<(), String> {
     use tauri_plugin_shell::process::CommandEvent;
     use tauri_plugin_shell::ShellExt;
@@ -752,14 +760,30 @@ fn start_speech(
     *state.speech_status.lock().unwrap() =
         serde_json::json!({ "type": "starting", "locale": locale });
 
-    // Script text feeds the sidecar's customized language model (macOS 14+),
-    // biasing recognition toward the words being read. Passed via file to
-    // avoid argv limits; the sidecar ignores it when unsupported.
+    // Script text feeds the sidecar's customized language model (macOS 14+);
+    // `contextual` is the script's non-stopword vocabulary (prepared by the
+    // frontend) for the request-level contextualStrings bias; `tricky` is the
+    // user's Settings list of hard words / pronunciations. All passed via
+    // files to avoid argv limits; the sidecar ignores what it can't use.
     let mut args = vec!["--locale".to_string(), locale.clone()];
     if let Some(text) = script_text.filter(|t| !t.trim().is_empty()) {
         let path = std::env::temp_dir().join("ai-teleprompter-script.txt");
         if fs::write(&path, text).is_ok() {
             args.push("--script".to_string());
+            args.push(path.to_string_lossy().to_string());
+        }
+    }
+    if let Some(list) = contextual.filter(|l| !l.is_empty()) {
+        let path = std::env::temp_dir().join("ai-teleprompter-contextual.txt");
+        if fs::write(&path, list.join("\n")).is_ok() {
+            args.push("--contextual".to_string());
+            args.push(path.to_string_lossy().to_string());
+        }
+    }
+    if let Some(text) = tricky.filter(|t| !t.trim().is_empty()) {
+        let path = std::env::temp_dir().join("ai-teleprompter-tricky.txt");
+        if fs::write(&path, text).is_ok() {
+            args.push("--tricky".to_string());
             args.push(path.to_string_lossy().to_string());
         }
     }

@@ -16,6 +16,39 @@
 // recognition of a common word ("the") can't teleport the cursor.
 export const DEFAULT_LOOKAHEAD = 12
 
+// English stopwords: too common to carry alignment evidence on their own.
+// A stopword can confirm the next expected word but never justify a jump,
+// and stopwords are excluded from the recognizer's contextual vocabulary.
+export const STOPWORDS = new Set([
+  'i', 'a', 'an', 'the', 'and', 'to', 'of', 'in', 'that', 'it', 'is', 'was',
+  'for', 'with', 'on', 'at', 'as', 'my', 'this', 'be', 'are', 'or', 'but',
+  'we', 'so', 'if', 'by', 'from', 'our', 'your', 'their', 'its', 'he', 'she',
+  'they', 'you', 'me', 'us', 'him', 'her', 'them', 'not', 'no', 'do', 'did',
+  'does', 'have', 'has', 'had', 'will', 'would', 'can', 'could', 'than',
+  'then', 'there', 'here', 'what', 'when', 'who', 'how', 'been', 'being',
+  'am', 'were', 'up', 'out', 'into', 'about', 'just', 'also', 'very',
+])
+
+// The script's non-stopword vocabulary for the recognizer's
+// contextualStrings bias: original casing kept (helps proper nouns and
+// acronyms), deduplicated case-insensitively, capped at the API guidance
+// limit of 100 entries.
+export function buildContextualStrings(scriptText, cap = 100) {
+  const out = []
+  const seen = new Set()
+  for (const chunk of String(scriptText || '').split(/\s+/)) {
+    const word = chunk.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '')
+    if (word.length < 3) continue
+    const norm = normalizeWord(word)
+    if (!norm || STOPWORDS.has(norm)) continue
+    if (seen.has(norm)) continue
+    seen.add(norm)
+    out.push(word)
+    if (out.length >= cap) break
+  }
+  return out
+}
+
 // Lowercase, fold full-width forms to half-width (NFKC), drop everything
 // that isn't a letter or digit. "Ｒｅａｃｔ，" → "react".
 export function normalizeWord(text) {

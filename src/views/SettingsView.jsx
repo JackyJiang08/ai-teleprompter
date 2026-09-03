@@ -59,6 +59,7 @@ export default function SettingsView() {
   const [mics, setMics] = useState([{ deviceId: 'default', label: 'Default microphone' }])
   const [micId, setMicId] = useState('default')
   const [wordTracking, setWordTracking] = useState(true)
+  const [trackingHints, setTrackingHints] = useState('')
   const [speechStatus, setSpeechStatus] = useState(null)
   const [speechNotice, setSpeechNotice] = useState('')
   const [aiProvider, setAiProvider] = useState('')
@@ -155,6 +156,7 @@ export default function SettingsView() {
     }
     if (c.micDeviceId)  setMicId(c.micDeviceId)
     if (c.wordTracking != null) setWordTracking(!!c.wordTracking)
+    if (c.trackingHints !== undefined) setTrackingHints(c.trackingHints)
     if (c.aiProvider !== undefined) setAiProvider(c.aiProvider)
     if (c.aiModel !== undefined)    setAiModel(c.aiModel)
     if (c.aiLocalUrl)   setAiLocalUrl(c.aiLocalUrl)
@@ -341,6 +343,23 @@ export default function SettingsView() {
                 </span>
               </div>
             )}
+            <div className="s-row s-col">
+              <span className="s-label">Tricky words</span>
+              <textarea
+                className="s-input s-textarea"
+                rows={2}
+                placeholder={'names the recognizer misses, one per line'}
+                value={trackingHints}
+                onChange={e => setTrackingHints(e.target.value)}
+                onBlur={() => API.setConfig({ trackingHints })}
+                spellCheck={false}
+              />
+              <span className="s-note">
+                Boosts recognition of proper nouns and jargon while reading.
+                Optional pronunciation: word=phonemes (X-SAMPA). Takes effect
+                at the next reading session.
+              </span>
+            </div>
             <div className="s-row">
               <span className="s-note">
                 Speech recognition runs entirely on-device (Apple Speech framework).

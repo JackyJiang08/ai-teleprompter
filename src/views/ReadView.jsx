@@ -90,6 +90,7 @@ export default function ReadView() {
       locale: 'en-US',
       tokens,
       scriptText,
+      trickyWords: configRef.current.trackingHints || '',
       onDebug: trackDebug ? (msg) => {
         if (msg.type === 'partial' || msg.type === 'final') {
           setDebug(d => ({ ...d, text: msg.text, session: msg.session, confidence: msg.confidence, at: Date.now(), emitted: msg.t }))
