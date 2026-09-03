@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    open_teleprompter_lib::run()
+    ai_teleprompter_lib::run()
 }

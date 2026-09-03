@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // Speech tracker — glues the on-device recognition sidecar to the cursor
 // matcher. Owns restart/fallback policy; the Rust side only supervises the
 // process (see start_speech in src-tauri/src/lib.rs).

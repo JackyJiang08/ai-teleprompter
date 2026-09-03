@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import React from 'react'

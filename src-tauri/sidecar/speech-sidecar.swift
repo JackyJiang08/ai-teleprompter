@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // speech-sidecar — on-device speech recognition bridge for the teleprompter.
 //
 // Runs Apple's SFSpeechRecognizer with requiresOnDeviceRecognition=true and
@@ -257,7 +257,7 @@ func buildCustomLM(scriptText: String, pipeline: Pipeline) async {
         let digest = SHA256.hash(data: Data((scriptText + "|" + localeId).utf8))
         let hash = digest.map { String(format: "%02x", $0) }.joined().prefix(16)
         let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("bilingual-teleprompter-lm", isDirectory: true)
+            .appendingPathComponent("ai-teleprompter-lm", isDirectory: true)
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
         let assetURL = cacheDir.appendingPathComponent("\(hash).bin")
         let lmURL = cacheDir.appendingPathComponent("\(hash).lm", isDirectory: true)
@@ -271,7 +271,7 @@ func buildCustomLM(scriptText: String, pipeline: Pipeline) async {
                 .prefix(500)
             let data = SFCustomLanguageModelData(
                 locale: Locale(identifier: localeId),
-                identifier: "com.jackyjiang.bilingual-teleprompter.script",
+                identifier: "com.jackyjiang.ai-teleprompter.script",
                 version: "1.0"
             ) {
                 for phrase in phrases {
@@ -284,7 +284,7 @@ func buildCustomLM(scriptText: String, pipeline: Pipeline) async {
         let config = SFSpeechLanguageModel.Configuration(languageModel: lmURL)
         try await SFSpeechLanguageModel.prepareCustomLanguageModel(
             for: assetURL,
-            clientIdentifier: "com.jackyjiang.bilingual-teleprompter",
+            clientIdentifier: "com.jackyjiang.ai-teleprompter",
             configuration: config
         )
         pipeline.adoptCustomLM(config)

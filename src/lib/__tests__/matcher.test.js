@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 import { describe, expect, it } from 'vitest'
 import { tokenizeDoc } from '../tokenizer'
 import { createCursorMatcher, normalizeWord, tokenizeTranscript } from '../matcher'

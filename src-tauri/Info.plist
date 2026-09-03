@@ -3,9 +3,9 @@
 <plist version="1.0">
 <dict>
   <key>NSMicrophoneUsageDescription</key>
-  <string>Bilingual AI Teleprompter uses your microphone to detect when you're speaking and scroll your script automatically.</string>
+  <string>AI Teleprompter uses your microphone to detect when you're speaking and scroll your script automatically.</string>
   <key>NSSpeechRecognitionUsageDescription</key>
-  <string>Bilingual AI Teleprompter uses on-device speech recognition to follow your reading position in the script. No audio or transcripts leave your Mac.</string>
+  <string>AI Teleprompter uses on-device speech recognition to follow your reading position in the script. No audio or transcripts leave your Mac.</string>
   <key>LSUIElement</key>
   <true/>
 </dict>

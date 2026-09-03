@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // Guided one-time setup for Prepare with AI, shown inline in the editor the
 // first time ✦ Prepare is clicked without a configured provider. Explains the
 // two provider options, validates them with a real "Test connection" request

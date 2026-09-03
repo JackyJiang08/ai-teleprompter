@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 /**
  * readme-shots.mjs — renders the README screenshots (docs/screenshots/) at
  * 2x DPI using the same URL demo hooks as the visual snapshot suite.

@@ -78,7 +78,7 @@ export default function IdleView({ isHovered }) {
           <button
             className="idle-quit"
             onClick={handleQuit}
-            title="Quit Bilingual AI Teleprompter"
+            title="Quit AI Teleprompter"
             aria-label="Quit"
           >
             <svg width="10" height="10" viewBox="0 0 12 12" fill="none" aria-hidden="true">

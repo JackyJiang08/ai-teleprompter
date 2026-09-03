@@ -297,7 +297,7 @@ fn default_scripts() -> Vec<Script> {
                 { "type": "text", "text": "Let me walk you through what we've built." }
             ]},
             { "type": "paragraph", "content": [
-                { "type": "text", "marks": [{"type": "bold"}], "text": "OpenTeleprompter" },
+                { "type": "text", "marks": [{"type": "bold"}], "text": "AI Teleprompter" },
                 { "type": "text", "text": " is a " },
                 { "type": "text", "marks": [{"type": "textStyle", "attrs": {"color": "#4ade80"}}], "text": "voice-activated teleprompter" },
                 { "type": "text", "text": " that lives right in your Mac's notch." }
@@ -632,7 +632,7 @@ fn start_speech(
     // avoid argv limits; the sidecar ignores it when unsupported.
     let mut args = vec!["--locale".to_string(), locale.clone()];
     if let Some(text) = script_text.filter(|t| !t.trim().is_empty()) {
-        let path = std::env::temp_dir().join("bilingual-teleprompter-script.txt");
+        let path = std::env::temp_dir().join("ai-teleprompter-script.txt");
         if fs::write(&path, text).is_ok() {
             args.push("--script".to_string());
             args.push(path.to_string_lossy().to_string());
@@ -724,7 +724,7 @@ fn get_speech_status(state: State<AppState>) -> serde_json::Value {
 // to the WebView. Errors are returned as "code:detail" strings; the frontend
 // maps codes to actionable messages.
 
-const KEYCHAIN_SERVICE: &str = "OpenTeleprompter";
+const KEYCHAIN_SERVICE: &str = "AI Teleprompter";
 const KEYCHAIN_ACCOUNT: &str = "anthropic-api-key";
 
 fn keyring_entry() -> Result<keyring::Entry, String> {
@@ -1198,7 +1198,7 @@ pub fn run() {
             TrayIconBuilder::with_id("main-tray")
                 .icon(icon)
                 .icon_as_template(true)
-                .tooltip("Bilingual AI Teleprompter")
+                .tooltip("AI Teleprompter")
                 .build(app)?;
 
             #[cfg(not(target_os = "macos"))]
@@ -1209,7 +1209,7 @@ pub fn run() {
                 let menu = Menu::with_items(app, &[&s, &q])?;
                 TrayIconBuilder::with_id("main-tray")
                     .icon(icon)
-                    .tooltip("OpenTeleprompter")
+                    .tooltip("AI Teleprompter")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
                     .build(app)?;

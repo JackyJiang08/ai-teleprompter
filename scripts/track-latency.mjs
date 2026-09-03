@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 /**
  * track-latency.mjs — measures speech-recognition partial cadence and
  * spoken-word→partial latency deterministically: renders a known sentence

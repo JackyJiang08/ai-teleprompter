@@ -1,4 +1,4 @@
-# Contributing to Bilingual AI Teleprompter
+# Contributing to AI Teleprompter
 
 Thanks for your interest! Here's how to contribute.
 
@@ -12,8 +12,8 @@ Thanks for your interest! Here's how to contribute.
 ## Getting started
 
 ```bash
-git clone https://github.com/JackyJiang08/bilingual-ai-teleprompter
-cd bilingual-ai-teleprompter
+git clone https://github.com/JackyJiang08/ai-teleprompter
+cd ai-teleprompter
 npm install
 npm run dev   # requires Rust + Cargo, Node 18+, Xcode Command Line Tools (Swift)
 ```

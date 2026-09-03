@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Bilingual AI Teleprompter",
-  "version": "1.1.0",
-  "identifier": "com.jackyjiang.bilingual-teleprompter",
+  "productName": "AI Teleprompter",
+  "version": "2.0.0",
+  "identifier": "com.jackyjiang.ai-teleprompter",
   "build": {
     "beforeDevCommand": "npm run build:sidecar && npm run dev:react",
     "devUrl": "http://localhost:1420",

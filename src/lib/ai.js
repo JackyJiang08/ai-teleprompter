@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // "Prepare with AI" — prompt construction, response parsing, and error
 // mapping for the script-preparation feature. Transport lives in Rust
 // (ai_complete in src-tauri/src/lib.rs); everything testable lives here.

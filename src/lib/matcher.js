@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+// Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 // Forward-searching cursor matcher: aligns a live speech transcript against
 // the tokenized script and reports the reader's current position.
 //

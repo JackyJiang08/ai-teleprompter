@@ -1,6 +1,6 @@
 #!/bin/bash
 # SPDX-License-Identifier: MIT
-# Part of Bilingual AI Teleprompter, a fork of openTeleprompt (MIT).
+# Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 #
 # readme-shots-real.sh — captures the README screenshots from the LIVE app
 # (docs/screenshots/), replacing the headless-Chrome renders made by
@@ -16,10 +16,10 @@
 # near the top-center of the main display in that case.
 set -euo pipefail
 
-APP="${TELEPROMPTER_APP:-/Applications/Bilingual AI Teleprompter.app}/Contents/MacOS/open-teleprompter"
+APP="${TELEPROMPTER_APP:-/Applications/AI Teleprompter.app}/Contents/MacOS/ai-teleprompter"
 OUT_DIR="$(cd "$(dirname "$0")/.." && pwd)/docs/screenshots"
 TMP_DIR="$(mktemp -d)"
-trap 'pkill -f open-teleprompter 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
+trap 'pkill -f ai-teleprompter 2>/dev/null || true; rm -rf "$TMP_DIR"' EXIT
 
 [ -x "$APP" ] || { echo "app not found at $APP — install the DMG first" >&2; exit 1; }
 
@@ -68,7 +68,7 @@ SHOTS=(
 mkdir -p "$OUT_DIR"
 for shot in "${SHOTS[@]}"; do
   IFS='|' read -r name params pad <<< "$shot"
-  pkill -f open-teleprompter 2>/dev/null || true
+  pkill -f ai-teleprompter 2>/dev/null || true
   sleep 1
   TELEPROMPTER_ALLOW_CAPTURE=1 TELEPROMPTER_DEMO_PARAMS="$params" "$APP" >/dev/null 2>&1 &
   sleep 6  # window creation + 1.5s delayed demo navigation + settle
@@ -81,6 +81,6 @@ for shot in "${SHOTS[@]}"; do
   fi
 done
 
-pkill -f open-teleprompter 2>/dev/null || true
+pkill -f ai-teleprompter 2>/dev/null || true
 echo
 echo "✨  Wrote ${#SHOTS[@]} screenshots to $OUT_DIR — review them before committing."
