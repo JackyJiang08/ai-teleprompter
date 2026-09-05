@@ -1,0 +1,3 @@
+Let me walk you through what we've built.
+AI Teleprompter is a voice-activated teleprompter that lives right in your Mac's notch.
+Speak — it scrolls. Stop — it pauses. No subscriptions, no setup, just open and go.

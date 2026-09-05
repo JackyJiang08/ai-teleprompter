@@ -1,0 +1,9 @@
+Good morning everyone, and welcome to the 2027 automation roadmap review.
+Last quarter we migrated 23% of our reporting from legacy spreadsheets into Power BI, and the UiPath robots now handle nearly half of all invoice triage.
+OCR accuracy on scanned receipts reached 91%, up from 78% at the start of 2026, and the exception queue shrank from nine hundred items a week to under two hundred.
+Our partnership with UIUC gives the analytics team access to shared GPU clusters, which cut NLP model training from six hours to forty minutes.
+On the platform side, the API gateway now serves 1200 requests per second with a p99 latency of 180 milliseconds, and the Kubernetes migration finished two sprints early.
+Snowflake remains the system of record; Tableau dashboards are being retired in favor of Power BI by Q3.
+The 2027 budget asks for three additional RPA developers, one MLOps engineer, and a dedicated QA rotation.
+If the SSO rollout with Okta lands in January, every internal tool — Jira, Confluence, and the UiPath orchestrator — moves behind a single login.
+We close with a risk register review: vendor lock-in, GDPR retention windows, and the OCR fallback path for handwritten forms.

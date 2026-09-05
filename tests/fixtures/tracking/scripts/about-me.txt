@@ -1,0 +1,5 @@
+Hi, I'm Arun — a full-stack engineer with five years of experience building products that scale.
+I've worked on systems serving over thirty million customers, and I love building things that actually matter to people.
+My stack spans React, Node.js, TypeScript, and cloud infrastructure on GCP. I'm comfortable across the entire stack — from pixel-perfect frontends to distributed backend systems.
+I thrive in environments where ownership and impact go hand in hand. I've led cross-functional features, mentored engineers, and shipped products used by real people every day.
+Outside of work, I'm into game development, guitar, and building side projects that push what's possible on the web.
