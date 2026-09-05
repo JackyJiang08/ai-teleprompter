@@ -2,7 +2,7 @@
 
 A free, open source voice-tracking teleprompter for **macOS**.
 
-**Speak → it scrolls. Stop → it pauses. No subscriptions. No cloud. No accounts.**
+**Speak → it scrolls. Stop → it pauses.** Speech recognition runs entirely on-device — no cloud, no account. The optional Prepare-with-AI step is the only thing that sends any text anywhere, and only when you click it: you choose the provider (your own Claude or ChatGPT subscription through their official CLIs, an Anthropic API key, or a local Ollama server).
 
 ---
 
@@ -30,8 +30,8 @@ See [NOTICE](NOTICE) for license and provenance details. Upstream repository: ht
 <p align="center"><img src="docs/screenshots/editor.png" width="600" alt="The script editor: one-row header with script tabs, Prepare, and Go; autosave indicator and cue/format menus in the footer"></p>
 <p align="center"><em>The script editor: script tabs, ✦ Prepare, and Go in one row — edits autosave, cue markers and formatting live in the footer menus.</em></p>
 
-<p align="center"><img src="docs/screenshots/ai-review.png" width="600" alt="Prepare with AI side-by-side review"></p>
-<p align="center"><em>Prepare with AI: side-by-side review before anything replaces your script.</em></p>
+<p align="center"><img src="docs/screenshots/ai-review.png" width="600" alt="Prepare with AI setup: Claude subscription, ChatGPT subscription, Claude API key, and local Ollama"></p>
+<p align="center"><em>Prepare with AI: four providers — use your existing Claude or ChatGPT subscription (no API key), an API key, or a local Ollama server.</em></p>
 
 ---
 
@@ -70,9 +70,10 @@ Instead of scrolling at a fixed speed whenever it hears sound, the prompter reco
 - **Scroll follows you** — the current word is eased toward a reading line at ~35% of the viewport. Speed up, slow down, skip a phrase, or stumble: the cursor tolerates skipped words, fillers, and misreads, and never jumps backward.
 - **100% on-device** — recognition uses Apple's Speech framework (English, `en-US`) with `requiresOnDeviceRecognition`. No audio or transcripts ever leave your Mac. macOS will ask once for Speech Recognition permission (plus the existing microphone permission).
 - **Script-biased recognition (macOS 14+)** — at the start of each reading session the app builds a customized on-device language model from your script (cached per script, rebuilt on edit), biasing recognition toward the exact words on screen. On a jargon-heavy test sentence this raised words recognized from 10/18 to 13/18 and cut p90 word-to-recognition latency from 1428 ms to 792 ms; common-vocabulary text is unaffected. On older systems the stock model is used, silently. Display-side responsiveness is also tuned so the highlight keeps up with your voice: the scroll-easing time constant dropped from ~280 ms to ~100 ms and the spoken-word fade from 300 ms to 150 ms. Measurement methodology and full numbers: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.3.
+- **Sequence-coherent alignment** — a single stray common word ("I", "the", "and") can begin the next sentence too, and the old matcher would teleport the cursor there permanently. The current matcher aligns whole phrases: stopwords can't trigger a jump, a jump needs a two-word anchor, and the cursor commits only stable words and can correct itself within a bounded window. It's tuned and regression-tested against a suite of **synthesized-voice fixtures** — 23 recordings made by running macOS text-to-speech (three voices, two speaking rates, plus deliberate fillers, repeats, a skipped word, a restart, and a mid-sentence silence) back through the real recognizer. Across all of them the cursor never teleports to the wrong sentence and finishes within a couple of words of the true end. Method and the before/after table: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.3.
 - **Graceful fallback** — if Speech permission is denied or the on-device English model isn't installed (System Settings › Keyboard › Dictation), the app falls back to the original frequency-based voice activation and says so in Settings. You can also turn Word Tracking off entirely.
 
-Under the hood: a small Swift sidecar streams on-device partial transcripts to the app, and a forward-searching matcher aligns them against the tokenized script. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.1.
+Under the hood: a small Swift sidecar streams on-device per-word transcripts to the app, and the sequence-coherent matcher aligns them against the tokenized script. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.1 and §3.3.
 
 ---
 

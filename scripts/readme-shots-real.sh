@@ -62,7 +62,7 @@ SHOTS=(
   'pill-idle|view=idle&mode=notch&theme=dark&hoverdemo=1|24'
   'word-tracking|view=read&mode=notch&theme=dark&trackdemo=1|28'
   'editor|view=edit&mode=notch&theme=dark|28'
-  'ai-review|view=edit&mode=notch&theme=dark&aireview=1|28'
+  'ai-review|view=edit&mode=notch&theme=dark&aisetup=1|28'
 )
 
 mkdir -p "$OUT_DIR"
