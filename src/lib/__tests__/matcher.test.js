@@ -20,13 +20,13 @@ function scriptTokens(...paragraphs) {
   })
 }
 
-// A plain string feeds as a partial (tentative). Finals are fully stable;
-// repeating a partial makes its words stable across two consecutive partials.
+// A plain string feeds as a partial (its last TAIL_TENTATIVE=2 words stay
+// tentative). A final commits the whole transcript. `commit()` feeds a final,
+// so alignment tests see the words of interest fully committed.
 const P = (text) => ({ text })
 const F = (text) => ({ text, type: 'final' })
-function stable(m, session, text) {
-  m.feed(session, P(text))
-  return m.feed(session, P(text))
+function commit(m, session, text) {
+  return m.feed(session, F(text))
 }
 
 describe('normalizeWord', () => {
@@ -98,17 +98,18 @@ describe('buildContextualStrings', () => {
 describe('stability gating', () => {
   const tokens = scriptTokens('The quick brown fox jumps over the lazy dog')
 
-  it('a first partial drives the provisional cursor but commits nothing', () => {
+  it('a partial holds its last two words tentative — they show but do not commit', () => {
+    const m = createCursorMatcher(tokens)
+    const pos = m.feed(1, P('the quick brown fox'))
+    expect(pos.matchedCount).toBe(2)     // "the quick" committed
+    expect(pos.provisionalCount).toBe(4) // "brown fox" tentative, shown only
+  })
+
+  it('a very short partial commits nothing yet', () => {
     const m = createCursorMatcher(tokens)
     const pos = m.feed(1, P('the quick'))
     expect(pos.matchedCount).toBe(0)
     expect(pos.provisionalCount).toBe(2)
-  })
-
-  it('words repeated across two consecutive partials commit', () => {
-    const m = createCursorMatcher(tokens)
-    const pos = stable(m, 1, 'the quick')
-    expect(pos.matchedCount).toBe(2)
   })
 
   it('a final result commits everything at once', () => {
@@ -118,23 +119,28 @@ describe('stability gating', () => {
     expect(pos.done).toBe(false)
   })
 
-  it('words older than ~600 ms by segment timestamp commit without a repeat', () => {
+  it('older words commit as newer tentative words arrive', () => {
     const m = createCursorMatcher(tokens)
-    const pos = m.feed(1, {
-      text: 'the quick brown',
-      words: [
-        { w: 'the', t: 0.0, d: 0.2 },
-        { w: 'quick', t: 0.3, d: 0.2 },
-        { w: 'brown', t: 2.0, d: 0.2 }, // newest — still tentative
-      ],
-    })
-    expect(pos.matchedCount).toBe(2)
-    expect(pos.provisionalCount).toBe(3)
+    m.feed(1, P('the quick brown'))
+    const pos = m.feed(1, P('the quick brown fox jumps'))
+    expect(pos.matchedCount).toBe(3)     // "the quick brown" now behind the tail
+    expect(pos.provisionalCount).toBe(5)
+  })
+
+  it('trustworthy segment timestamps let old words commit past the tail', () => {
+    // With a realistic time span the age rule applies: words older than
+    // ~600 ms commit even inside the last-two-words tentative window, so four
+    // of the five commit (only the newest is still tentative) — versus three
+    // under the position rule alone.
+    const words = 'the quick brown fox jumps'.split(' ').map((w, i) => ({ w, t: i * 0.6, d: 0.3 }))
+    const m = createCursorMatcher(tokens)
+    const pos = m.feed(1, { text: 'the quick brown fox jumps', words })
+    expect(pos.matchedCount).toBe(4)
   })
 
   it('the provisional cursor never falls behind the committed one', () => {
     const m = createCursorMatcher(tokens)
-    stable(m, 1, 'the quick brown')
+    m.feed(1, P('the quick brown fox jumps'))
     const pos = m.feed(1, P('the quick brown'))
     expect(pos.provisionalCount).toBeGreaterThanOrEqual(pos.matchedCount)
   })
@@ -149,22 +155,21 @@ describe('stopword rule', () => {
 
   it('a stray stopword never justifies a jump', () => {
     const m = createCursorMatcher(tokens)
-    stable(m, 1, 'we built the')
-    const pos = stable(m, 1, 'we built the i')
-    expect(pos.matchedCount).toBe(3) // still expecting "tracking"
+    const pos = commit(m, 1, 'we built the i')
+    expect(pos.matchedCount).toBe(3) // "we built the", still expecting "tracking"
     expect(m.stats().jumps).toHaveLength(0)
   })
 
   it('a stopword still confirms the next expected word', () => {
     const m = createCursorMatcher(tokens)
-    const pos = stable(m, 1, 'we built the')
-    expect(pos.matchedCount).toBe(3) // "the" advanced the cursor by 1
+    const pos = commit(m, 1, 'we built the') // "the" advanced the cursor by 1
+    expect(pos.matchedCount).toBe(3)
   })
 
   it('regression: the stray-I mid-sentence does not teleport to the next sentence', () => {
     const m = createCursorMatcher(tokens)
-    stable(m, 1, 'we built the i')
-    const pos = stable(m, 1, 'we built the tracking engine over the summer')
+    m.feed(1, P('we built the i'))
+    const pos = commit(m, 1, 'we built the tracking engine over the summer')
     expect(pos.matchedCount).toBe(8) // whole first sentence, in order
     expect(m.stats().jumps).toHaveLength(0)
   })
@@ -175,14 +180,14 @@ describe('jump rule (bigram anchor)', () => {
 
   it('two consecutive matching words justify a nearest jump', () => {
     const m = createCursorMatcher(tokens)
-    const pos = stable(m, 1, 'alpha delta epsilon')
+    const pos = commit(m, 1, 'alpha delta epsilon')
     expect(pos.matchedCount).toBe(5) // beta+gamma absorbed, cursor after epsilon
     expect(m.stats().jumps).toEqual([{ from: 1, to: 3 }])
   })
 
   it('a single distant word — even a rare one — does not jump', () => {
     const m = createCursorMatcher(tokens)
-    const pos = stable(m, 1, 'alpha epsilon')
+    const pos = commit(m, 1, 'alpha epsilon')
     expect(pos.matchedCount).toBe(1)
     expect(m.stats().jumps).toHaveLength(0)
   })
@@ -190,7 +195,7 @@ describe('jump rule (bigram anchor)', () => {
   it('prefers the nearest candidate position', () => {
     const t2 = scriptTokens('x q delta echo y delta echo z')
     const m = createCursorMatcher(t2)
-    stable(m, 1, 'x delta echo')
+    commit(m, 1, 'x delta echo')
     const pos = m.position()
     // lands after the FIRST "delta echo", expecting "y"
     expect(t2[pos.cursorTokenIndex].text).toBe('y')
@@ -199,7 +204,7 @@ describe('jump rule (bigram anchor)', () => {
   it('caps a single advance at 6 words', () => {
     const t2 = scriptTokens('one two three four five six seven eight nine ten')
     const m = createCursorMatcher(t2)
-    const pos = stable(m, 1, 'one nine ten') // 7 words ahead — too far
+    const pos = commit(m, 1, 'one nine ten') // 7 words ahead — too far
     expect(pos.matchedCount).toBe(1)
     expect(m.stats().jumps).toHaveLength(0)
   })
@@ -225,16 +230,52 @@ describe('bounded backtrack', () => {
   })
 })
 
+describe('long resync (trigram anchor)', () => {
+  // A twelve-word script; the recognizer drops the first eight words and only
+  // catches the tail — far beyond the six-word bigram jump cap.
+  const tokens = scriptTokens('alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu')
+
+  it('recovers from a dropped sentence via three consecutive matches', () => {
+    const m = createCursorMatcher(tokens)
+    const pos = commit(m, 1, 'iota kappa lambda mu') // 8 words ahead
+    expect(pos.matchedCount).toBe(12)
+    expect(m.stats().jumps).toEqual([{ from: 0, to: 8 }])
+  })
+
+  it('a two-word match alone does not resync over a long gap', () => {
+    const m = createCursorMatcher(tokens)
+    const pos = commit(m, 1, 'kappa lambda') // only a bigram, 9 words ahead
+    expect(pos.matchedCount).toBe(0)
+    expect(m.stats().jumps).toHaveLength(0)
+  })
+})
+
+describe('a final is authoritative', () => {
+  // Finals replace the stable prefix outright, even when they revise a word
+  // more than the backtrack window behind — a partial's mishearing must not
+  // outweigh the recognizer's final answer.
+  const tokens = scriptTokens('one two three four five six seven eight nine')
+
+  it('a final overrides a deep revision a partial locked in', () => {
+    const m = createCursorMatcher(tokens)
+    m.feed(1, P('one two three four five six seven')) // commits ~five
+    const pos = m.feed(1, F('one XX three four five six seven eight nine'))
+    // "two" misheard as XX in the final, but everything after realigns
+    expect(pos.matchedCount).toBe(9)
+    expect(pos.done).toBe(true)
+  })
+})
+
 describe('fuzzy matching', () => {
   it('accepts edit distance 1 on words of 5+ letters', () => {
     const m = createCursorMatcher(scriptTokens('the tracking engine'))
-    const pos = stable(m, 1, 'the trackin engine')
+    const pos = commit(m, 1, 'the trackin engine')
     expect(pos.matchedCount).toBe(3)
   })
 
   it('requires exact matches for short words', () => {
     const m = createCursorMatcher(scriptTokens('the cat sat'))
-    const pos = stable(m, 1, 'the cab')
+    const pos = commit(m, 1, 'the cab')
     expect(pos.matchedCount).toBe(1) // "cab" ≠ "cat"
   })
 })
@@ -243,39 +284,39 @@ describe('normalization end to end', () => {
   it('matches percentages spoken or formatted', () => {
     const t = scriptTokens('growth hit 23% this year')
     const spoken = createCursorMatcher(t)
-    expect(stable(spoken, 1, 'growth hit twenty three percent').matchedCount).toBe(3)
+    expect(commit(spoken, 1, 'growth hit twenty three percent').matchedCount).toBe(3)
     const formatted = createCursorMatcher(t)
-    expect(stable(formatted, 1, 'growth hit 23%').matchedCount).toBe(3)
+    expect(commit(formatted, 1, 'growth hit 23%').matchedCount).toBe(3)
   })
 
   it('matches years in both readings', () => {
     const t = scriptTokens('shipping in 2027 worldwide')
     const a = createCursorMatcher(t)
-    expect(stable(a, 1, 'shipping in twenty twenty seven').matchedCount).toBe(3)
+    expect(commit(a, 1, 'shipping in twenty twenty seven').matchedCount).toBe(3)
     const b = createCursorMatcher(t)
-    expect(stable(b, 1, 'shipping in two thousand twenty seven').matchedCount).toBe(3)
+    expect(commit(b, 1, 'shipping in two thousand twenty seven').matchedCount).toBe(3)
   })
 
   it('matches acronyms spelled out or merged', () => {
     const t = scriptTokens('I studied at UIUC in Illinois')
     const a = createCursorMatcher(t)
-    expect(stable(a, 1, 'i studied at u i u c').matchedCount).toBe(4)
+    expect(commit(a, 1, 'i studied at u i u c').matchedCount).toBe(4)
     const b = createCursorMatcher(t)
-    expect(stable(b, 1, 'i studied at UIUC').matchedCount).toBe(4)
+    expect(commit(b, 1, 'i studied at UIUC').matchedCount).toBe(4)
   })
 
   it('matches hyphenated compounds spoken as separate words', () => {
     const t = scriptTokens('a voice-activated teleprompter')
     const m = createCursorMatcher(t)
-    expect(stable(m, 1, 'a voice activated teleprompter').matchedCount).toBe(3)
+    expect(commit(m, 1, 'a voice activated teleprompter').matchedCount).toBe(3)
   })
 
   it('matches possessives with or without the s', () => {
     const t = scriptTokens("the world's fastest")
     const a = createCursorMatcher(t)
-    expect(stable(a, 1, 'the worlds fastest').matchedCount).toBe(3)
+    expect(commit(a, 1, 'the worlds fastest').matchedCount).toBe(3)
     const b = createCursorMatcher(t)
-    expect(stable(b, 1, 'the world fastest').matchedCount).toBe(3)
+    expect(commit(b, 1, 'the world fastest').matchedCount).toBe(3)
   })
 })
 

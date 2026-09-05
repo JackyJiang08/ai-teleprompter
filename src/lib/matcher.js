@@ -17,34 +17,54 @@
 //      (two consecutive transcript words matching two consecutive script
 //      words at the target), nearest candidate first, at most 6 words ahead.
 //   4. Stability gating — the tail of a partial is tentative: it drives a
-//      provisional display cursor but commits only once stable (repeated
-//      across two consecutive partials, older than ~600 ms by segment
-//      timestamp, or part of a final result).
+//      provisional display cursor but commits only once stable. A word is
+//      stable when it is one of: part of a final result; more than
+//      TAIL_TENTATIVE words behind the growing end of the transcript (the
+//      recognizer revises only the last word or two, not words already deep
+//      in the utterance); or old by segment timestamp when those timestamps
+//      are trustworthy (they are not in the sidecar's file-feed mode, so the
+//      position rule is the workhorse). The stable prefix is tracked
+//      monotonically per session, so a momentarily bad partial can't drop it.
 //   5. Bounded backtrack — a stable bigram anchor up to 3 words behind the
 //      committed cursor corrects a wrong jump.
 //
 // Fuzzy matching: words of 5+ letters accept edit distance ≤ 1; shorter
 // words must match exactly.
 
-// A single advance may skip at most this many script words (jump rule).
+// A single advance may skip at most this many script words (jump rule) on a
+// two-word (bigram) anchor.
 export const MAX_JUMP = 6
+// A three-word (trigram) anchor is strong enough to justify a much longer
+// forward resync — this recovers when the recognizer drops a whole clause or
+// sentence (a live hiccup, or a low-fidelity stretch of audio) and the reader
+// is really that far ahead. The trigram makes a coincidental long jump
+// vanishingly unlikely.
+export const MAX_RESYNC = 40
 // The committed cursor may move back at most this many words (backtrack rule).
 export const MAX_BACKTRACK = 3
+// The trailing words of a partial the recognizer may still revise — held
+// tentative (provisional only), not committed.
+export const TAIL_TENTATIVE = 2
 // A word older than this (by segment timestamp, relative to the newest
-// segment) is considered stable even before a repeat or final confirms it.
+// segment) is also treated as stable — but only when the segment timestamps
+// span a realistic duration (file-feed mode reports a degenerate ~0 span).
 export const STABLE_AGE_S = 0.6
 
-// English stopwords: too common to carry alignment evidence on their own.
-// A stopword can confirm the next expected word but never justify a jump,
-// and stopwords are excluded from the recognizer's contextual vocabulary.
+// English stopwords: the highest-frequency function words, too common to
+// carry alignment evidence on their own. A stopword can confirm the next
+// expected word but never justify a jump, and stopwords are excluded from
+// the recognizer's contextual vocabulary. Deliberately narrow — the jump
+// rule already requires a two-word (bigram) anchor, so this is a second line
+// of defence against teleporting, not the only one. Kept to articles,
+// conjunctions, core prepositions, pronouns, and be/do/have auxiliaries;
+// content-ish words a reader leans on ("just", "no", "up", "out", "here")
+// stay matchable so an end-of-utterance phrase like "just open" can still
+// anchor. (Tunable — see docs/ARCHITECTURE.md §3.3.)
 export const STOPWORDS = new Set([
   'i', 'a', 'an', 'the', 'and', 'to', 'of', 'in', 'that', 'it', 'is', 'was',
   'for', 'with', 'on', 'at', 'as', 'my', 'this', 'be', 'are', 'or', 'but',
   'we', 'so', 'if', 'by', 'from', 'our', 'your', 'their', 'its', 'he', 'she',
-  'they', 'you', 'me', 'us', 'him', 'her', 'them', 'not', 'no', 'do', 'did',
-  'does', 'have', 'has', 'had', 'will', 'would', 'can', 'could', 'than',
-  'then', 'there', 'here', 'what', 'when', 'who', 'how', 'been', 'being',
-  'am', 'were', 'up', 'out', 'into', 'about', 'just', 'also', 'very',
+  'they', 'you', 'me', 'us', 'him', 'her', 'them', 'do', 'does', 'have', 'has',
 ])
 
 // Lowercase, fold full-width forms to half-width (NFKC), drop everything
@@ -245,7 +265,7 @@ export function createCursorMatcher(scriptTokens) {
   let provisional = 0      // display cursor (committed + tentative tail)
   let committedBase = 0    // committed cursor when the current session began
   let session = null       // sidecar recognition session currently being fed
-  let prevRaw = []         // previous partial's raw words (stability by repeat)
+  let sessionStable = []   // monotonic stable-word prefix locked this session
   let confirmedInSession = new Set()
   const confirmedArchive = new Set()
   const jumpLog = []       // deduped committed-path jumps, for stats()
@@ -309,6 +329,27 @@ export function createCursorMatcher(scriptTokens) {
           break
         }
         if (jumped) continue
+
+        // Long resync on a trigram anchor: the recognizer skipped a large
+        // span (whole clause/sentence). Require three consecutive matches so
+        // the long jump can't be coincidental; nearest match wins.
+        for (let t = cursor + MAX_JUMP + 1; t + 2 < total && t <= cursor + MAX_RESYNC; t++) {
+          const a = matchEntryAt(t, stream, i)
+          if (!a) continue
+          const b = matchEntryAt(t + 1, stream, i + a)
+          if (!b) continue
+          const c = matchEntryAt(t + 2, stream, i + a + b)
+          if (!c) continue
+          events?.push({ type: 'jump', from: cursor, to: t })
+          events?.push({ type: 'confirm', entry: t })
+          events?.push({ type: 'confirm', entry: t + 1 })
+          events?.push({ type: 'confirm', entry: t + 2 })
+          cursor = t + 3
+          i += a + b + c
+          jumped = true
+          break
+        }
+        if (jumped) continue
       }
       i++ // filler or misread — dropped
     }
@@ -326,66 +367,101 @@ export function createCursorMatcher(scriptTokens) {
     }
   }
 
+  function toStream(words) {
+    const stream = []
+    for (const w of words) {
+      for (const ew of expandTranscriptWord(w)) {
+        stream.push({ w: ew, isStop: STOPWORDS.has(ew) })
+      }
+    }
+    return stream
+  }
+
+  function commonPrefixLen(a, b) {
+    let i = 0
+    while (i < a.length && i < b.length && a[i] === b[i]) i++
+    return i
+  }
+
   function feed(newSession, input) {
     if (newSession !== session) {
       session = newSession
       committedBase = committed
-      prevRaw = []
+      sessionStable = []
       for (const e of confirmedInSession) confirmedArchive.add(e)
       confirmedInSession = new Set()
     }
 
     const msg = typeof input === 'string' ? { text: input } : (input || {})
     const isFinal = msg.type === 'final' || msg.final === true
-    const raw = Array.isArray(msg.words) && msg.words.length
+    const rawWords = Array.isArray(msg.words) && msg.words.length
       ? msg.words.map(w => ({ text: String(w.w ?? w.text ?? ''), t: w.t, d: w.d }))
       : String(msg.text || '').split(/\s+/).filter(Boolean).map(text => ({ text }))
+    const rawText = rawWords.map(w => w.text)
 
-    // Stability per raw word: in the common prefix with the previous partial
-    // (stable across two consecutive partials), older than STABLE_AGE_S by
-    // segment timestamp, or part of a final. Each condition marks a prefix,
-    // so the stable region is always a prefix of the stream.
-    let lcp = 0
-    while (lcp < prevRaw.length && lcp < raw.length && prevRaw[lcp] === raw[lcp].text) lcp++
-    const latestEnd = raw.reduce(
-      (m, w) => (typeof w.t === 'number' ? Math.max(m, w.t + (w.d || 0)) : m), -Infinity)
-    raw.forEach((w, j) => {
-      w.stable = isFinal || j < lcp ||
-        (typeof w.t === 'number' && latestEnd > -Infinity && w.t + (w.d || 0) <= latestEnd - STABLE_AGE_S)
-    })
-    prevRaw = raw.map(w => w.text)
-
-    const stream = []
-    for (const w of raw) {
-      for (const ew of expandTranscriptWord(w.text)) {
-        stream.push({ w: ew, stable: w.stable, isStop: STOPWORDS.has(ew) })
+    // How much of THIS partial is stable. Position rule: the recognizer only
+    // revises the last TAIL_TENTATIVE words, so everything before them is
+    // stable (a final makes the whole transcript stable). Age rule: when the
+    // segment timestamps span a realistic duration (they don't in file-feed
+    // mode), words older than STABLE_AGE_S can also be treated as stable.
+    let stableLenNow = isFinal ? rawWords.length : Math.max(0, rawWords.length - TAIL_TENTATIVE)
+    if (!isFinal && rawWords.length > 4) {
+      const ts = rawWords.map(w => (typeof w.t === 'number' ? w.t : null)).filter(t => t !== null)
+      if (ts.length === rawWords.length) {
+        const span = Math.max(...ts) - Math.min(...ts)
+        if (span > 1.0) {
+          const latestEnd = Math.max(...rawWords.map(w => w.t + (w.d || 0)))
+          let ageStable = 0
+          while (ageStable < rawWords.length &&
+                 rawWords[ageStable].t + (rawWords[ageStable].d || 0) <= latestEnd - STABLE_AGE_S) ageStable++
+          stableLenNow = Math.max(stableLenNow, ageStable)
+        }
       }
     }
-    let stableLen = 0
-    while (stableLen < stream.length && stream[stableLen].stable) stableLen++
+    const candidateStable = rawText.slice(0, stableLenNow)
 
-    // Committed cursor: replay the session's stable prefix from the session
-    // base. Replaying (rather than incrementally committing) lets later
-    // stable evidence revise an earlier wrong jump — the bounded backtrack.
+    // Merge into the session's monotonic stable prefix. A final is
+    // authoritative — it replaces the stable prefix outright. For partials:
+    // pure extensions grow it; a small revision within MAX_BACKTRACK of its
+    // tail is accepted (the bounded backtrack); a deep divergence is treated
+    // as a bad partial and ignored so the committed cursor can't be yanked
+    // away by one noisy hypothesis.
+    if (isFinal) {
+      sessionStable = candidateStable
+    } else {
+      const lcp = commonPrefixLen(sessionStable, candidateStable)
+      if (lcp === sessionStable.length) {
+        if (candidateStable.length > sessionStable.length) sessionStable = candidateStable
+      } else if (sessionStable.length - lcp <= MAX_BACKTRACK && candidateStable.length >= lcp) {
+        sessionStable = candidateStable
+      }
+    }
+
+    // Committed cursor: align the whole stable prefix from the session base.
+    // Re-deriving each partial lets later stable evidence revise an earlier
+    // wrong jump (via align's bounded backtrack).
     const events = []
     const prevCommitted = committed
-    let next = align(stream.slice(0, stableLen), committedBase, Math.max(0, committedBase - MAX_BACKTRACK), events)
-    next = Math.max(next, prevCommitted - MAX_BACKTRACK)
-    committed = next
+    committed = align(toStream(sessionStable), committedBase, Math.max(0, committedBase - MAX_BACKTRACK), events)
+    // Backtrack is bounded: the committed cursor never drops more than
+    // MAX_BACKTRACK below its prior value. This holds even for a final — on a
+    // very long single session the recognizer truncates the head of its
+    // transcript, so a "final" can arrive as only the tail; that must not
+    // erase committed progress (it is truncation, not a revision).
+    committed = Math.max(committed, prevCommitted - MAX_BACKTRACK)
 
-    confirmedInSession = new Set(
-      events.filter(e => e.type === 'confirm').map(e => e.entry))
+    confirmedInSession = new Set(events.filter(e => e.type === 'confirm').map(e => e.entry))
     for (const e of events) {
       if (e.type === 'jump' && e.to >= prevCommitted && !seenJumpTargets.has(e.to)) {
         seenJumpTargets.add(e.to)
         jumpLog.push({ from: e.from, to: e.to })
       }
-      if (e.type === 'backtrack') backtracks++
     }
+    if (committed < prevCommitted) backtracks++
 
-    // Provisional display cursor: continue over the tentative tail with the
-    // same rules; it may run ahead but never behind the committed cursor.
-    provisional = Math.max(committed, align(stream.slice(stableLen), committed, committed))
+    // Provisional display cursor: align the full current transcript from the
+    // session base; never behind the committed cursor.
+    provisional = Math.max(committed, align(toStream(rawText), committedBase, Math.max(0, committedBase - MAX_BACKTRACK)))
 
     return position()
   }
@@ -395,7 +471,7 @@ export function createCursorMatcher(scriptTokens) {
     provisional = 0
     committedBase = 0
     session = null
-    prevRaw = []
+    sessionStable = []
     confirmedInSession = new Set()
     confirmedArchive.clear()
     jumpLog.length = 0

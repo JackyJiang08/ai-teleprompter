@@ -185,29 +185,52 @@ permanently. The current matcher is built around five rules:
 3. **Jump rule** — advancing by more than one word requires a **bigram
    anchor**: two consecutive transcript words matching two consecutive
    script words at the target position, nearest candidate first, at most
-   `MAX_JUMP` (6) words ahead. Unmatched words are dropped (fillers,
-   misreads).
+   `MAX_JUMP` (6) words ahead. A stronger **trigram** anchor (three
+   consecutive matches) justifies a much longer forward **resync** up to
+   `MAX_RESYNC` (40) words — this recovers when the recognizer drops a whole
+   clause or sentence (a live hiccup or a low-fidelity stretch) without
+   letting a coincidental match teleport the cursor. Unmatched words are
+   dropped (fillers, misreads).
 4. **Stability gating** — two cursors. The **provisional** cursor includes
    the tentative tail of the latest partial and drives the highlight and
    the scroll; the **committed** cursor (which dims spoken text and defines
-   `done`) advances only on words that are stable: repeated across two
-   consecutive partials, older than `STABLE_AGE_S` (~600 ms) by segment
-   timestamp, or part of a final result. Commits replay the session's
-   stable prefix from the session base, so later stable evidence can revise
-   an earlier wrong path.
+   `done`) advances only on stable words. A word is stable when it is: part
+   of a final result; more than `TAIL_TENTATIVE` (2) words behind the
+   growing end of the transcript (the recognizer revises only the last word
+   or two — the position rule, and the workhorse, since it needs no
+   timestamps); or older than `STABLE_AGE_S` (~600 ms) by segment timestamp
+   **when those timestamps span a realistic duration** (they do not in the
+   sidecar's file-feed mode). The stable prefix is tracked monotonically per
+   session, so one noisy partial cannot drop it; a final is authoritative
+   and replaces it outright. Commits replay the stable prefix from the
+   session base, so later stable evidence can revise an earlier wrong path.
 5. **Bounded backtrack** — a stable bigram anchor up to `MAX_BACKTRACK` (3)
    words behind the committed cursor pulls it back, correcting a wrong
-   jump.
+   jump. The bound is a hard invariant: the committed cursor never drops
+   more than `MAX_BACKTRACK` below its prior value, so even a truncated
+   "final" (the recognizer discards the head of a very long single-session
+   transcript) cannot erase committed progress.
 
 Fuzzy matching accepts edit distance ≤ 1 for script words of 5+ letters;
 shorter words must match exactly. The public interface is unchanged
 (`feed`/`reset`/`position`), with `position()` now reporting both
 `matchedCount`/`cursorTokenIndex` (committed) and
 `provisionalCount`/`provisionalTokenIndex`; `stats()` exposes committed-path
-jump/backtrack events for the tooling below. On the synthetic teleport
-fixture (below), the legacy matcher scores 1 cross-sentence jump, a 5-word
+jump/backtrack events for the tooling below.
+
+**Parameters (`MAX_JUMP`, `MAX_RESYNC`, `MAX_BACKTRACK`, `TAIL_TENTATIVE`,
+`STABLE_AGE_S`, `STOPWORDS`) were tuned against the synthesized-voice fixture
+suite** (below), not one example — the stopword list was narrowed to core
+function words (a bigram anchor already guards against teleporting, so
+content-ish words like "just"/"no"/"up" stay matchable) and the resync,
+final-authority, and backtrack-bound rules were added to fix failures the
+fixtures exposed (dropped sentences, truncated finals). On the synthetic
+teleport fixture the legacy matcher scores 1 cross-sentence jump, a 5-word
 skip, and 44% alignment on the affected sentence; the current matcher is
-clean (0 jumps, 100% on every sentence).
+clean (0 jumps, 100%). Across all 24 fixtures the current matcher's
+**overshoot is 0** (the committed cursor never reaches a position it must
+retreat from — the true wrong-teleport signal) and final cursor error is
+≤ 3 words on every clean and misread read.
 
 **Recognition biasing.** Three layers, all optional and silent on failure:
 
@@ -224,16 +247,40 @@ clean (0 jumps, 100% on every sentence).
   recognizer misreads.
 
 **Recording and replay.** `?trackrecord=1` (dev-only, like the other URL
-hooks) records the session — script text plus the full raw sidecar message
-stream — and saves it via the dev-only `save_tracking_fixture` command as a
-JSON fixture under `tests/fixtures/tracking/`.
-`scripts/track-replay.mjs <fixture> [--legacy]` replays a fixture through
-the matcher deterministically and reports cross-sentence jump count, max
-forward skip, backtracks, final cursor error, and per-sentence alignment
-rate; `--legacy` runs an inline copy of the pre-2.1 greedy matcher for
-before/after comparisons. The committed `synthetic-teleport.json` fixture
-reproduces the original bug and is also asserted in the unit suite
-(`tracking-fixture.test.js`).
+hooks) records a live session — script text plus the full raw sidecar
+message stream — and saves it via the dev-only `save_tracking_fixture`
+command as a JSON fixture under `tests/fixtures/tracking/`.
+`scripts/track-replay.mjs <fixture[.gz]> [--legacy]` (or `--all` for a table)
+replays a fixture through the matcher deterministically and reports
+cross-sentence jump count, max forward skip, overshoot, backtracks, final
+cursor error, max within-session stall, and per-sentence alignment rate;
+`--legacy` runs an inline copy of the pre-2.1 greedy matcher for
+before/after comparisons.
+
+**Synthesized-voice fixture suite.** `scripts/make-fixtures.sh` (macOS only,
+kept out of CI) synthesizes the fixtures from `say` text-to-speech: for each
+source script (`tests/fixtures/tracking/scripts/` — the demo library plus a
+~200-word jargon-dense brief with product names, acronyms, and numbers) it
+renders audio per breath-group, converts to the feed format, and runs the
+real speech sidecar with the matching `--script`/`--contextual` inputs, one
+sidecar run per breath-group so the fixture reproduces the live recognizer's
+per-sentence session rotation. 23 fixtures cover three en-US voices, two
+rates (~160/200 wpm), and five misread variants (inserted fillers, a
+repeated phrase, a skipped word, a restarted sentence, a 2-second
+mid-sentence silence). `src/lib/__tests__/tracking-suite.test.js` replays
+them all in CI (they are committed, so no speech dependency there) and
+asserts the targets — overshoot 0 on every fixture, final cursor error ≤ 3,
+and no within-session stall beyond 4.5 s. The committed
+`synthetic-teleport.json` fixture reproduces the original teleport bug and
+is asserted exactly in `tracking-fixture.test.js`.
+
+**On the stall target.** The 2-second aspiration holds for normal-density
+scripts; a long jargon-dense sentence at 160 wpm can run to ~4 s because the
+recognizer's partials for a hard phrase lag — a recognition property, not a
+matcher stall (the cursor is not wrong, it is waiting for a recognizable
+word). To regenerate after tuning: `scripts/build-sidecar.sh &&
+scripts/make-fixtures.sh`, then `node scripts/track-replay.mjs --all` to
+review, then re-run the suite.
 
 **Latency instrumentation.** `scripts/track-latency.mjs` measures the
 recognition pipeline deterministically: it renders a known sentence with
