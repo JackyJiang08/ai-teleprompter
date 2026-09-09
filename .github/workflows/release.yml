@@ -30,34 +30,26 @@ jobs:
           draft: true
           prerelease: false
           body: |
-            ## AI Teleprompter v2.0.0
+            ## AI Teleprompter v2.1.0
 
-            A new name, a sharper focus, and a substantially better tracking engine.
+            Word-tracking refinements on top of the v2.0.0 engine.
 
             ---
 
-            ### 🏷️ Renamed, with automatic migration
+            ### 🏄 Coasting — the highlight never freezes mid-phrase
 
-            Product name, bundle identifier, and repository are all renamed **AI Teleprompter** (old repository URLs redirect). Because the bundle identifier changed, macOS treats 2.0 as a new app — so on first launch it migrates the previous install's data automatically (**copied, never moved or deleted**, and only once). Two things macOS cannot carry across an identity change, explained by a one-time in-app notice:
+            The recognizer lags your voice by a moment, and on a hard phrase it can go quiet for a second or more. Coasting keeps the highlight gliding forward at your reading pace during those lags — capped a few words ahead — then eases back to the exact word the instant recognition catches up. A coasted word shows the accent highlight without the underline. It's **display only** (it never changes where tracking has confirmed), on by default, and toggleable in Settings. On the test suite the worst display freeze drops from 4.2 s to 2.1 s.
 
-            - **AI provider API key** — re-enter it in Settings → Prepare with AI (it lives only in the macOS Keychain).
-            - **Microphone & Speech Recognition permissions** — macOS asks again on your first reading session.
+            ### 🎯 Truer tracking, tested against real recognition
 
-            ### 🎯 Sequence-coherent word tracking
+            - The speech sidecar now rotates recognition sessions on its own **silence endpointing**, at the pauses between sentences — the way a live reader speaks — which keeps each session short and its timestamps real, and prevents transcript truncation on long readings.
+            - The regression suite (macOS text-to-speech read back through the real recognizer — three voices, two rates, plus fillers, repeats, skips, a restart, and silences) is regenerated as one continuous feed per script, so it matches live use. Across all 24 fixtures the cursor never teleports and ends **exactly** on the last word; a new **line-completion** rule commits a line's last dropped words at its closing pause so the next sentence starts clean.
 
-            Word tracking was rebuilt so a stray common word can no longer teleport the cursor into the wrong sentence:
+            ### 📝 Consistency
 
-            - The sidecar now streams **per-word data** (each word's timing and confidence), and every recognition request is biased toward your script's **vocabulary** (`contextualStrings`) on top of the customized language model — plus an optional **Tricky words** list in Settings for proper nouns and pronunciations.
-            - The matcher aligns whole phrases: **stopwords can't trigger a jump**, a jump needs a **two-word anchor**, the cursor commits only **stable** words and can **correct itself** within a bounded window, and numbers/percentages/acronyms are matched in spoken form (`23%` ↔ "twenty three percent", `UIUC` ↔ "u i u c").
-            - Tuned and regression-tested against a suite of **synthesized-voice fixtures** (macOS text-to-speech run back through the real recognizer — three voices, two rates, plus fillers/repeats/skips/restart/silence). Across all of them the cursor never teleports to the wrong sentence and ends within a couple of words of the true end.
+            The README's word-tracking description was corrected — the cursor self-corrects within a small bounded window rather than "never jumping backward" — and documents coasting.
 
-            ### 🤖 Four ways to Prepare with AI
-
-            ✦ Prepare now works with **your existing Claude or ChatGPT subscription — no API key** — by delegating to the official Claude Code and OpenAI Codex CLIs you've already signed into (the app never touches your credentials). An Anthropic API key and a local Ollama server are still there too. Pick a **model** and an **effort** level (Low / Medium / High / Extra high) per provider, with live Available / Not installed / Not logged in detection in Settings.
-
-            ### 🇺🇸 English-only scope
-
-            Word tracking always runs the on-device `en-US` recognizer; the language selector is gone.
+            Everything from [v2.0.0](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.0.0) — the rename with automatic migration, the four AI providers (your Claude or ChatGPT subscription with no API key, an API key, or local Ollama) with model/effort selection, and English-only on-device tracking — is unchanged. **Upgrading from 1.x?** First launch still migrates your library automatically and asks for the mic/speech permissions and the AI key again (a one-time in-app notice explains it).
 
             ---
 
@@ -65,8 +57,8 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.0.0_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
-            | 🍎 Intel Mac | `AI Teleprompter_2.0.0_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.0_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Intel Mac | `AI Teleprompter_2.1.0_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
 
             ### ⚠️ First launch
 

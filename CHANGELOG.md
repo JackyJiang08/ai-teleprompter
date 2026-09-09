@@ -1,5 +1,50 @@
 # Changelog
 
+## v2.1.0 — 2026-09-08
+
+Word-tracking refinements and truer regression fixtures.
+
+### Coasting — no frozen highlight while the recognizer catches up
+
+- When the frequency-based voice-activity signal says you're still
+  speaking but no new recognizer partial has arrived for ~800 ms, the
+  **display** cursor keeps advancing at your recently measured reading rate
+  (a rolling words-per-second estimate from confirmed advances), capped 8
+  words past the confirmed position, and eases back to the exact word on the
+  next match. A coasted word shows the accent highlight without the
+  confirming underline. It is **display only** — the confirmed cursor, and
+  every accuracy metric, is untouched. On by default; a Settings toggle
+  turns it off. On the fixture suite the worst within-session display stall
+  drops from 4.2 s to 2.1 s
+
+### Structurally faithful tracking fixtures
+
+- The sidecar now rotates recognition sessions on its own **silence
+  endpointing** — Apple's on-device recognizer never finalizes a continuous
+  feed by itself and gives placeholder timestamps in partials, so the
+  pipeline watches the audio energy and calls `endAudio()` at a pause to
+  elicit a real final (with real per-word timestamps). This is the
+  sentence-boundary rotation a live reader produces, for both microphone and
+  file input, and it prevents transcript truncation on long readings
+- The 24 synthesized-voice fixtures are regenerated as a **single continuous
+  audio feed** per script (the v2.0.0 fixtures used one recognizer run per
+  breath group, which made session boundaries coincide with sentence
+  boundaries and inflated the cross-sentence jump count); a new misread
+  variant adds a long mid-sentence pause that forces a session rotation
+  mid-sentence. On the regenerated suite the matcher holds overshoot 0 and
+  final cursor error 0 on every fixture (the pre-2.1 greedy matcher makes 34
+  cross-sentence jumps to the current matcher's 6); a **line-completion**
+  rule commits a line's last dropped words on its closing final so the next
+  session aligns from the true boundary. Cross-sentence jumps are 0 on the
+  natural-rate clean reads and the jargon script, ≤1 on the fast-rate and
+  misread variants
+
+### Fixes
+
+- README: the Word Tracking "Scroll follows you" bullet said the cursor
+  "never jumps backward"; corrected to describe the bounded self-correction
+  (up to 3 words back), and a coasting sentence added
+
 ## v2.0.0 — 2026-09-04
 
 The app is renamed **AI Teleprompter** (previously "Bilingual AI
