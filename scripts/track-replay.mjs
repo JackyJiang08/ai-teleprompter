@@ -256,9 +256,18 @@ export function replayFixture(fixture, { legacy = false } = {}) {
   for (let s = 0; s < sentenceCount; s++) {
     const idxs = entrySentence.map((v, i) => (v === s ? i : -1)).filter(i => i >= 0)
     const hit = idxs.filter(i => confirmedEntries.has(i)).length
-    perSentence.push({ sentence: s + 1, confirmed: hit, total: idxs.length })
+    // First-word recall: were the sentence's opening words actually confirmed
+    // by a match (not skipped over)? This is the direct signal for the audio-
+    // loss-across-rotation bug — dropped audio at a session boundary loses the
+    // first words of the resumed sentence. We check the first two matchable
+    // words (or the only one, for a one-word sentence).
+    const firstTwo = idxs.slice(0, Math.min(2, idxs.length))
+    const firstTwoConfirmed = firstTwo.length > 0 && firstTwo.every(i => confirmedEntries.has(i))
+    perSentence.push({ sentence: s + 1, confirmed: hit, total: idxs.length, firstTwoConfirmed })
   }
   const confirmedTotal = perSentence.reduce((a, p) => a + p.confirmed, 0)
+  const firstWordSentences = perSentence.filter(p => p.firstTwoConfirmed).length
+  const firstWordRecallPct = sentenceCount ? Math.round((firstWordSentences / sentenceCount) * 100) : 100
 
   return {
     total: pos.total,
@@ -275,6 +284,8 @@ export function replayFixture(fixture, { legacy = false } = {}) {
     displayStallOn,
     perSentence,
     alignPct: pos.total ? Math.round((confirmedTotal / pos.total) * 100) : 100,
+    firstWordSentences,
+    firstWordRecallPct,
   }
 }
 
@@ -298,10 +309,11 @@ if (RUN_CLI && !fixturePath && !all) {
     rows.push({ name: fixture.name || file.split('/').pop(), kind: fixture.kind || '?', ...m })
   }
   console.log(`matcher: ${legacy ? 'LEGACY (greedy pre-2.1)' : 'current (sequence-coherent)'} — ${rows.length} fixtures\n`)
-  const header = ['fixture', 'kind', 'xjumps', 'maxskip', 'over', 'backtr', 'final', 'err', 'align%', 'dstall.off', 'dstall.on']
+  const header = ['fixture', 'kind', 'xjumps', 'maxskip', 'over', 'backtr', 'final', 'err', 'align%', 'fw-recall', 'dstall.off', 'dstall.on']
   const table = rows.map(r => [
     r.name, r.kind, r.crossSentenceJumps, r.maxForwardSkip, r.overshoot, r.backtracks,
     `${r.finalCommitted}/${r.expectedFinal}`, r.finalError, r.alignPct,
+    `${r.firstWordSentences}/${r.sentenceCount}`,
     (r.displayStallOff / 1000).toFixed(1) + 's', (r.displayStallOn / 1000).toFixed(1) + 's',
   ])
   const widths = header.map((h, i) => Math.max(h.length, ...table.map(row => String(row[i]).length)))
@@ -316,10 +328,12 @@ if (RUN_CLI && !fixturePath && !all) {
     over: Math.max(0, ...rows.map(r => r.overshoot)),
     stall: Math.max(0, ...rows.map(r => r.maxStallMs)),
     align: Math.round(rows.reduce((a, r) => a + r.alignPct, 0) / Math.max(1, rows.length)),
+    fwHit: rows.reduce((a, r) => a + r.firstWordSentences, 0),
+    fwTot: rows.reduce((a, r) => a + r.sentenceCount, 0),
     dOff: Math.max(0, ...rows.map(r => r.displayStallOff)),
     dOn: Math.max(0, ...rows.map(r => r.displayStallOn)),
   }
-  console.log(`\naggregate: cross-sentence jumps ${agg.xjumps} · max skip ${agg.maxskip} · Σ final error ${agg.err} · worst overshoot ${agg.over} · worst display stall ${(agg.dOff / 1000).toFixed(1)}s coasting off → ${(agg.dOn / 1000).toFixed(1)}s coasting on · mean alignment ${agg.align}%`)
+  console.log(`\naggregate: cross-sentence jumps ${agg.xjumps} · max skip ${agg.maxskip} · Σ final error ${agg.err} · worst overshoot ${agg.over} · first-word recall ${agg.fwHit}/${agg.fwTot} sentences (${Math.round((agg.fwHit / Math.max(1, agg.fwTot)) * 100)}%) · worst display stall ${(agg.dOff / 1000).toFixed(1)}s coasting off → ${(agg.dOn / 1000).toFixed(1)}s coasting on · mean alignment ${agg.align}%`)
 } else if (RUN_CLI && fixturePath) {
   const fixture = loadFixture(fixturePath)
   const m = replayFixture(fixture, { legacy })
@@ -336,7 +350,8 @@ if (RUN_CLI && !fixturePath && !all) {
   console.log(`per-sentence alignment:`)
   for (const p of m.perSentence) {
     const pct = p.total ? Math.round((p.confirmed / p.total) * 100) : 100
-    console.log(`  sentence ${p.sentence}: ${p.confirmed}/${p.total} (${pct}%)`)
+    console.log(`  sentence ${p.sentence}: ${p.confirmed}/${p.total} (${pct}%)${p.firstTwoConfirmed ? '' : '  ⚠ first words dropped'}`)
   }
   console.log(`overall alignment:     ${m.alignPct}%`)
+  console.log(`first-word recall:     ${m.firstWordSentences}/${m.sentenceCount} sentences (${m.firstWordRecallPct}%)`)
 }

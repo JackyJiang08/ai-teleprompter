@@ -94,18 +94,74 @@ function docFromText(text) {
 // A short spoken lead-in warms up the custom LM before the first sentence.
 const LEAD_IN = 'All right, here we go.'
 
+// ── Seeded pink-noise mixer (for the "noisy" fixture family) ──
+// Deterministic so regenerated fixtures are reproducible. Mixes low-level
+// pink noise into the 16-bit PCM so the sidecar's ADAPTIVE silence threshold
+// is exercised against a raised, non-silent noise floor — a fixed threshold
+// would never endpoint (noise sits above it) and sessions would never rotate.
+function mulberry32(seed) {
+  let a = seed >>> 0
+  return () => {
+    a |= 0; a = (a + 0x6D2B79F5) | 0
+    let t = Math.imul(a ^ (a >>> 15), 1 | a)
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+// Add pink noise at the given RMS level (dBFS) to a mono 16-bit WAV in place.
+function addPinkNoiseToWav(wavPath, dbfs, seed) {
+  const buf = readFileSync(wavPath)
+  // Locate the 'data' chunk (WAV headers are not always a flat 44 bytes).
+  let off = 12
+  while (off + 8 <= buf.length) {
+    const id = buf.toString('ascii', off, off + 4)
+    const size = buf.readUInt32LE(off + 4)
+    if (id === 'data') { off += 8; break }
+    off += 8 + size + (size & 1)
+  }
+  const dataStart = off
+  const n = (buf.length - dataStart) >> 1
+  const rnd = mulberry32(seed)
+  // Paul Kellet's economy pink-noise filter over white noise.
+  let b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0
+  const pink = new Float64Array(n)
+  let sumSq = 0
+  for (let i = 0; i < n; i++) {
+    const white = rnd() * 2 - 1
+    b0 = 0.99886 * b0 + white * 0.0555179
+    b1 = 0.99332 * b1 + white * 0.0750759
+    b2 = 0.96900 * b2 + white * 0.1538520
+    b3 = 0.86650 * b3 + white * 0.3104856
+    b4 = 0.55000 * b4 + white * 0.5329522
+    b5 = -0.7616 * b5 - white * 0.0168980
+    const p = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362
+    b6 = white * 0.115926
+    pink[i] = p
+    sumSq += p * p
+  }
+  const rms = Math.sqrt(sumSq / Math.max(1, n)) || 1
+  const targetRms = Math.pow(10, dbfs / 20) * 32767
+  const gain = targetRms / rms
+  for (let i = 0; i < n; i++) {
+    const s = buf.readInt16LE(dataStart + i * 2) + pink[i] * gain
+    buf.writeInt16LE(Math.max(-32768, Math.min(32767, Math.round(s))), dataStart + i * 2)
+  }
+  writeFileSync(wavPath, buf)
+}
+
 // Turn the script's spoken text into one continuous utterance: insert a pause
 // after each sentence and a trailing pause so the sidecar's silence
 // endpointing rotates a session per sentence (the last one included), and
 // prepend the warm-up lead-in. Silence markers a misread variant injected
 // (e.g. a mid-sentence [[slnc]]) are preserved and produce their own session
 // rotations.
-function toContinuousSpoken(spokenText) {
-  const paced = spokenText.replace(/([.!?])(\s+)(?=[A-Z0-9"'—[])/g, '$1 [[slnc 650]] $2')
+function toContinuousSpoken(spokenText, pauseMs = 650) {
+  const paced = spokenText.replace(/([.!?])(\s+)(?=[A-Z0-9"'—[])/g, `$1 [[slnc ${pauseMs}]] $2`)
   return `${LEAD_IN} [[slnc 400]] ${paced} [[slnc 800]]`
 }
 
-async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, alteration }) {
+async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, alteration, pauseMs = 650, noiseDbfs = null }) {
   const dir = mkdtempSync(join(tmpdir(), 'make-fixture-'))
   try {
     const scriptFile = join(dir, 'script.txt')
@@ -115,8 +171,14 @@ async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, al
 
     const aiff = join(dir, 'utterance.aiff')
     const wav = join(dir, 'utterance.wav')
-    execFileSync('say', ['-v', voice, '-r', String(rate), '-o', aiff, toContinuousSpoken(spokenText)])
+    execFileSync('say', ['-v', voice, '-r', String(rate), '-o', aiff, toContinuousSpoken(spokenText, pauseMs)])
     execFileSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@22050', '-c', '1', aiff, wav])
+    // "noisy" family: raise the noise floor so the adaptive threshold matters.
+    if (noiseDbfs != null) {
+      // Seed from the fixture name so each fixture's noise is fixed but distinct.
+      const seed = [...name].reduce((h, c) => (Math.imul(h, 31) + c.charCodeAt(0)) | 0, 7)
+      addPinkNoiseToWav(wav, noiseDbfs, seed)
+    }
 
     // ONE sidecar run over the whole utterance; the sidecar rotates sessions
     // itself at the pauses (silence endpointing), exactly as it does live.
@@ -158,6 +220,8 @@ async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, al
         voice,
         rate,
         alteration: alteration || null,
+        pauseMs,
+        noiseDbfs,
         audioFormat: 'WAVE pcm_s16le 22050 Hz mono (afconvert LEI16@22050)',
         sidecar: 'speech-sidecar --audio-file, single continuous feed, silence-endpointed session rotation',
       },
@@ -201,6 +265,41 @@ for (const script of SCRIPTS) {
       alteration,
     })
   }
+}
+
+// New in v2.1.1 — two alteration FAMILIES applied to ALL THREE scripts, each
+// targeting one live-chain fix directly:
+//
+//   quick-resume  Correct speech, but each sentence resumes only ~630 ms after
+//                 the previous ends — just past the 600 ms endpoint. The next
+//                 sentence's opening words land right at the session rotation,
+//                 so this measures the zero-gap replay (first-word recall).
+//   noisy         Correct speech mixed with low-level pink noise (~−30 dBFS),
+//                 raising the noise floor above any fixed silence threshold.
+//                 Sessions must still rotate — that only works with the
+//                 adaptive floor — and the targets must still hold.
+for (const script of SCRIPTS) {
+  const scriptText = readFileSync(join(SCRIPT_DIR, `${script}.txt`), 'utf8').trim()
+  jobs.push({
+    name: `${script}__quick-resume`,
+    kind: 'clean',
+    scriptText,
+    spokenText: scriptText,
+    voice: 'Samantha',
+    rate: 175,
+    alteration: 'quick-resume',
+    pauseMs: 630,
+  })
+  jobs.push({
+    name: `${script}__noisy`,
+    kind: 'clean',
+    scriptText,
+    spokenText: scriptText,
+    voice: 'Samantha',
+    rate: 175,
+    alteration: 'noisy',
+    noiseDbfs: -30,
+  })
 }
 
 const selected = only ? jobs.filter(j => j.name.includes(only)) : jobs
