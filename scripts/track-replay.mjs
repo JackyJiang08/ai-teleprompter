@@ -31,6 +31,7 @@ import { join } from 'path'
 import { gunzipSync } from 'zlib'
 import { tokenizeDoc } from '../src/lib/tokenizer.js'
 import { createCursorMatcher, normalizeWord } from '../src/lib/matcher.js'
+import { coastDisplayWords, createReadingRate } from '../src/lib/coasting.js'
 
 const FIXTURE_DIR = new URL('../tests/fixtures/tracking', import.meta.url).pathname
 
@@ -128,6 +129,55 @@ function createLegacyMatcher(scriptTokens, lookahead = 12) {
   return { feed, reset: () => {}, position, stats }
 }
 
+// Longest time the DISPLAY (highlight) word does not advance within a
+// recognition session, modelling coasting on or off. With coasting off the
+// display is the provisional cursor, so this is the same within-session stall
+// the highlight would freeze for. With coasting on, the coaster advances the
+// display at the reading-rate estimate during recognizer gaps (assuming the
+// reader keeps voicing — the realistic case when the recognizer lags), so the
+// stall is bounded by COAST_GAP_MS until the cap is reached. Silence between
+// sessions is a real pause and does not count (measured within a session).
+function displayStall(timeline, coastingOn) {
+  const STEP = 50 // ms
+  let worst = 0
+  // group by session
+  const bySession = new Map()
+  for (const p of timeline) {
+    if (!bySession.has(p.session)) bySession.set(p.session, [])
+    bySession.get(p.session).push(p)
+  }
+  for (const points of bySession.values()) {
+    if (points.length < 2) continue
+    const rate = createReadingRate()
+    // Feed the whole session's committed advances so the rate estimate is
+    // representative (a live session would build it up as it goes; the peak
+    // stall is what we report either way).
+    for (const p of points) rate.record(p.committed, p.t)
+    const wps = rate.wordsPerSecond()
+    let lastMatchMs = points[0].t
+    let lastDisplayWord = Math.floor(points[0].provisional)
+    let frozenSince = points[0].t
+    let idx = 0
+    for (let t = points[0].t; t <= points[points.length - 1].t; t += STEP) {
+      while (idx + 1 < points.length && points[idx + 1].t <= t) {
+        idx++
+        if (points[idx].provisional > points[idx - 1].provisional) lastMatchMs = points[idx].t
+      }
+      const cur = points[idx]
+      const displayWords = coastingOn
+        ? coastDisplayWords({
+            committedWords: cur.committed, provisionalWords: cur.provisional,
+            lastMatchMs, nowMs: t, wps, speaking: true, enabled: true,
+          })
+        : cur.provisional
+      const dw = Math.floor(displayWords)
+      if (dw > lastDisplayWord) { lastDisplayWord = dw; frozenSince = t }
+      else worst = Math.max(worst, t - frozenSince)
+    }
+  }
+  return worst
+}
+
 // ── Replay one fixture and compute metrics ─────────────────
 export function replayFixture(fixture, { legacy = false } = {}) {
   const tokens = tokenizeDoc(docFromText(fixture.script))
@@ -157,12 +207,15 @@ export function replayFixture(fixture, { legacy = false } = {}) {
   // ever seen minus where it finishes. (The benign forward sentence-to-
   // sentence progression of per-sentence sessions is not overshoot.)
   let maxCommitted = 0
+  // Position timeline (for the coasting display-stall model below).
+  const timeline = []
 
   for (const msg of fixture.messages || []) {
     if (msg.type !== 'partial' && msg.type !== 'final') continue
     const pos = matcher.feed(msg.session, msg)
     maxCommitted = Math.max(maxCommitted, pos.matchedCount)
     const t = typeof msg.t === 'number' ? msg.t : null
+    if (t !== null) timeline.push({ t, session: msg.session, committed: pos.matchedCount, provisional: pos.provisionalCount })
     // Stalls are measured only WITHIN a recognition session. A session change
     // is a sentence boundary — the reader's natural pause there, and (in the
     // synthesized fixtures) the gap between per-sentence sidecar runs, are not
@@ -187,6 +240,8 @@ export function replayFixture(fixture, { legacy = false } = {}) {
 
   const pos = matcher.position()
   const overshoot = Math.max(0, maxCommitted - pos.matchedCount)
+  const displayStallOff = displayStall(timeline, false)
+  const displayStallOn = displayStall(timeline, true)
   const { jumps, backtracks, confirmedEntries, entryTokenIndex } = matcher.stats()
   const entrySentence = entryTokenIndex.map(ti => tokenSentence[ti])
   const sentenceCount = entrySentence.length ? entrySentence[entrySentence.length - 1] + 1 : 0
@@ -216,6 +271,8 @@ export function replayFixture(fixture, { legacy = false } = {}) {
     finalError,
     maxStallMs,
     overshoot,
+    displayStallOff,
+    displayStallOn,
     perSentence,
     alignPct: pos.total ? Math.round((confirmedTotal / pos.total) * 100) : 100,
   }
@@ -241,11 +298,11 @@ if (RUN_CLI && !fixturePath && !all) {
     rows.push({ name: fixture.name || file.split('/').pop(), kind: fixture.kind || '?', ...m })
   }
   console.log(`matcher: ${legacy ? 'LEGACY (greedy pre-2.1)' : 'current (sequence-coherent)'} — ${rows.length} fixtures\n`)
-  const header = ['fixture', 'kind', 'xjumps', 'maxskip', 'over', 'backtr', 'final', 'err', 'stall(s)', 'align%']
+  const header = ['fixture', 'kind', 'xjumps', 'maxskip', 'over', 'backtr', 'final', 'err', 'align%', 'dstall.off', 'dstall.on']
   const table = rows.map(r => [
     r.name, r.kind, r.crossSentenceJumps, r.maxForwardSkip, r.overshoot, r.backtracks,
-    `${r.finalCommitted}/${r.expectedFinal}`, r.finalError,
-    (r.maxStallMs / 1000).toFixed(1), r.alignPct,
+    `${r.finalCommitted}/${r.expectedFinal}`, r.finalError, r.alignPct,
+    (r.displayStallOff / 1000).toFixed(1) + 's', (r.displayStallOn / 1000).toFixed(1) + 's',
   ])
   const widths = header.map((h, i) => Math.max(h.length, ...table.map(row => String(row[i]).length)))
   const fmt = row => row.map((c, i) => String(c).padEnd(widths[i])).join('  ')
@@ -259,8 +316,10 @@ if (RUN_CLI && !fixturePath && !all) {
     over: Math.max(0, ...rows.map(r => r.overshoot)),
     stall: Math.max(0, ...rows.map(r => r.maxStallMs)),
     align: Math.round(rows.reduce((a, r) => a + r.alignPct, 0) / Math.max(1, rows.length)),
+    dOff: Math.max(0, ...rows.map(r => r.displayStallOff)),
+    dOn: Math.max(0, ...rows.map(r => r.displayStallOn)),
   }
-  console.log(`\naggregate: cross-sentence jumps ${agg.xjumps} · max skip ${agg.maxskip} · Σ final error ${agg.err} · worst stall ${(agg.stall / 1000).toFixed(1)}s · mean alignment ${agg.align}%`)
+  console.log(`\naggregate: cross-sentence jumps ${agg.xjumps} · max skip ${agg.maxskip} · Σ final error ${agg.err} · worst overshoot ${agg.over} · worst display stall ${(agg.dOff / 1000).toFixed(1)}s coasting off → ${(agg.dOn / 1000).toFixed(1)}s coasting on · mean alignment ${agg.align}%`)
 } else if (RUN_CLI && fixturePath) {
   const fixture = loadFixture(fixturePath)
   const m = replayFixture(fixture, { legacy })
@@ -273,6 +332,7 @@ if (RUN_CLI && !fixturePath && !all) {
   console.log(`final cursor:          ${m.finalCommitted}/${m.expectedFinal} (error ${m.finalError})`)
   console.log(`max stall:             ${(m.maxStallMs / 1000).toFixed(1)}s`)
   console.log(`overshoot:             ${m.overshoot} words`)
+  console.log(`display stall:         ${(m.displayStallOff / 1000).toFixed(1)}s coasting off → ${(m.displayStallOn / 1000).toFixed(1)}s coasting on`)
   console.log(`per-sentence alignment:`)
   for (const p of m.perSentence) {
     const pct = p.total ? Math.round((p.confirmed / p.total) * 100) : 100

@@ -150,6 +150,8 @@ pub struct Config {
     pub theme: String,
     #[serde(default = "default_word_tracking")]
     pub word_tracking: bool,
+    #[serde(default = "default_coasting")]
+    pub coasting: bool,
     // Newline-separated user-supplied "tricky words" for recognition biasing:
     // "word" or "word=X-SAMPA phonemes". Empty by default.
     #[serde(default)]
@@ -166,6 +168,7 @@ pub struct Config {
 }
 
 fn default_word_tracking() -> bool { true }
+fn default_coasting() -> bool { true }
 fn default_ai_local_url() -> String { "http://localhost:11434".to_string() }
 
 impl Default for Config {
@@ -186,6 +189,7 @@ impl Default for Config {
             mic_device_id: "default".to_string(),
             theme: "dark".to_string(),
             word_tracking: default_word_tracking(),
+            coasting: default_coasting(),
             tracking_hints: String::new(),
             ai_provider: String::new(),
             ai_model: String::new(),
@@ -532,6 +536,7 @@ fn set_config(app: AppHandle, state: State<AppState>, patch: serde_json::Value) 
     if let Some(v) = patch.get("micDeviceId").and_then(|v| v.as_str()) { cfg.mic_device_id = v.to_string(); }
     if let Some(v) = patch.get("theme").and_then(|v| v.as_str()) { cfg.theme = v.to_string(); }
     if let Some(v) = patch.get("wordTracking").and_then(|v| v.as_bool()) { cfg.word_tracking = v; }
+    if let Some(v) = patch.get("coasting").and_then(|v| v.as_bool()) { cfg.coasting = v; }
     if let Some(v) = patch.get("trackingHints").and_then(|v| v.as_str()) { cfg.tracking_hints = v.to_string(); }
     if let Some(v) = patch.get("aiProvider").and_then(|v| v.as_str()) { cfg.ai_provider = v.to_string(); }
     if let Some(v) = patch.get("aiModel").and_then(|v| v.as_str()) { cfg.ai_model = v.to_string(); }

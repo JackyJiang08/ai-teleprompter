@@ -537,6 +537,13 @@ body.mode-classic .idle-quit { opacity: 1; }
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
 }
+/* Coasted current word: the display cursor is running ahead of the recognizer
+   on the reading-rate estimate. Same accent highlight, but no confirming
+   underline (and a hair dimmer) so it reads as "provisional, catching up". */
+#script-text .tok-coasted {
+  color: var(--accent);
+  opacity: 0.8;
+}
 .read-marker.tok-spoken { opacity: 0.35; }
 
 /* Dev-only tracking-quality overlay (?trackdebug=1) */

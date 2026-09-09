@@ -4,6 +4,7 @@ import { useAppStore } from '../store'
 import { API } from '../lib/api'
 import { createMicEngine, SPEEDS, SCROLL_SPEED_BASE } from '../lib/mic'
 import { createSpeechTracker } from '../lib/speech'
+import { coastDisplayWords, createReadingRate } from '../lib/coasting'
 
 // When word tracking drives the scroll, the current word is eased toward
 // this fraction of the viewport height (the "reading line").
@@ -18,6 +19,9 @@ const FOLLOW_SMOOTHING = 0.16
 export default function ReadView() {
   const { scriptText, scriptDoc, config, setView, setRecognition } = useAppStore()
   const tokens = scriptDoc ? tokenizeDoc(scriptDoc) : []
+  // word-order index → token index (for mapping a coasted word position back
+  // to a token to highlight/scroll to)
+  const wordTokenIndices = tokens.map((t, i) => (t.type === 'word' ? i : -1)).filter(i => i >= 0)
 
   // Live config refs — updated whenever config changes, used inside RAF/mic without remount
   const configRef = useRef(config)
@@ -31,10 +35,12 @@ export default function ReadView() {
   )
   const [fontSize, setFontSize] = useState(config.fontSize || 16)
   const [micStatus, setMicStatus] = useState('Waiting…')
-  // Word-tracking cursor for rendering: `cursor` is the provisional display
-  // position (highlighted), `committed` the confirmed position (everything
-  // before it renders as spoken).
-  const [track, setTrack] = useState({ active: false, cursor: -1, committed: -1, done: false })
+  // Word-tracking cursor for rendering: `cursor` is the display position
+  // (highlighted — may be coasted ahead of the recognizer), `committed` the
+  // confirmed position (everything before it renders as spoken), `coasting`
+  // true when the display cursor is running ahead on the reading-rate
+  // estimate while the recognizer catches up (rendered without the underline).
+  const [track, setTrack] = useState({ active: false, cursor: -1, committed: -1, done: false, coasting: false })
   // Dev-only tracking-quality overlay (?trackdebug=1): raw partials vs
   // matched position, for debugging recognition/matcher behavior
   const trackDebug = new URLSearchParams(window.location.search).has('trackdebug')
@@ -61,8 +67,17 @@ export default function ReadView() {
   const firedMarkers = useRef(new Set()) // indices already fired
   const micEngineRef = useRef(null)
   const speechTrackerRef = useRef(null)
-  const trackRef = useRef({ active: false, cursor: -1, committed: -1, done: false })
+  const trackRef = useRef({ active: false, cursor: -1, committed: -1, done: false, coasting: false })
   const silenceTimer = useRef(null)
+
+  // ── Coasting (display-only) ──
+  const coastVadRef = useRef(null)          // frequency VAD, coasting signal only
+  const vadSpeakingRef = useRef(false)      // its onSpeaking/onSilence state
+  const rateRef = useRef(createReadingRate())
+  const lastMatchAtRef = useRef(null)       // ms when the provisional cursor last advanced
+  const coastInputRef = useRef({ commWords: 0, provWords: 0, done: false })
+  const wordIdxRef = useRef([])             // word-order index → token index
+  const displayCursorRef = useRef(-1)       // last rendered display token index
 
   // Keep refs in sync
   useEffect(() => { isPausedRef.current = isPaused }, [isPaused])
@@ -117,12 +132,25 @@ export default function ReadView() {
         }
       } : undefined,
       onUpdate: (pos) => {
+        const now = Date.now()
+        // Feed the reading-rate estimate and reset the coast baseline whenever
+        // the recognizer actually advances the display cursor.
+        rateRef.current.record(pos.matchedCount, now)
+        const prov = pos.provisionalCount ?? pos.matchedCount
+        if (prov > (coastInputRef.current.provWords ?? 0) || lastMatchAtRef.current == null) {
+          lastMatchAtRef.current = now
+        }
+        coastInputRef.current = { commWords: pos.matchedCount, provWords: prov, done: pos.done }
+        // Base display cursor from the recognizer; the RAF loop may coast it
+        // ahead. Setting it here keeps the highlight responsive on each match.
         setTrackBoth({
           active: true,
           cursor: pos.provisionalTokenIndex ?? pos.cursorTokenIndex,
           committed: pos.cursorTokenIndex,
           done: pos.done,
+          coasting: false,
         })
+        displayCursorRef.current = pos.provisionalTokenIndex ?? pos.cursorTokenIndex
         isSpeakingRef.current = pos.speaking
         setIsSpeaking(pos.speaking)
         setRecognition({
@@ -149,6 +177,23 @@ export default function ReadView() {
     })
     speechTrackerRef.current = tracker
     tracker.start()
+
+    // Coasting needs an independent "is the reader voicing?" signal: the
+    // tracker's own `speaking` flag drops ~900 ms after the last partial —
+    // exactly when coasting should kick in. So run the frequency VAD engine
+    // alongside the tracker purely to feed vadSpeakingRef (it does not drive
+    // the scroll here). Off when coasting is disabled.
+    if (configRef.current.coasting !== false) {
+      lastMatchAtRef.current = Date.now()
+      const vad = createMicEngine({
+        threshold: configRef.current.threshold,
+        onSpeaking: () => { vadSpeakingRef.current = true },
+        onSilence:  () => { vadSpeakingRef.current = false },
+        onError:    () => {},
+      })
+      coastVadRef.current = vad
+      vad.start(configRef.current.micDeviceId)
+    }
   }
 
   function stopEngines() {
@@ -156,6 +201,9 @@ export default function ReadView() {
     speechTrackerRef.current = null
     micEngineRef.current?.stop()
     micEngineRef.current = null
+    coastVadRef.current?.stop()
+    coastVadRef.current = null
+    vadSpeakingRef.current = false
   }
 
   // React to live config changes while ReadView is mounted (VAD engine only —
@@ -238,12 +286,37 @@ export default function ReadView() {
       if (vp && st && !paused) {
         const maxScroll = Math.max(0, st.scrollHeight - vp.clientHeight)
         if (t.active) {
-          // Follow the reader's position
+          // Coasting: while the reader is voicing (frequency VAD) but the
+          // recognizer has stalled, advance the DISPLAY cursor at the reading
+          // rate, capped a few words past committed. Display-only — the
+          // committed cursor and every accuracy metric are untouched.
+          if (!t.done) {
+            const ci = coastInputRef.current
+            const displayWords = coastDisplayWords({
+              committedWords: ci.commWords,
+              provisionalWords: ci.provWords,
+              lastMatchMs: lastMatchAtRef.current,
+              nowMs: Date.now(),
+              wps: rateRef.current.wordsPerSecond(),
+              speaking: vadSpeakingRef.current,
+              enabled: configRef.current.coasting !== false,
+            })
+            const coasting = displayWords > ci.provWords + 1e-6
+            const wIdx = Math.min(Math.floor(displayWords), wordTokenIndices.length - 1)
+            const displayToken = wordTokenIndices[wIdx] ?? t.cursor
+            // Re-render only when the highlighted token actually changes.
+            if (displayToken !== displayCursorRef.current || coasting !== trackRef.current.coasting) {
+              displayCursorRef.current = displayToken
+              setTrackBoth({ ...trackRef.current, cursor: displayToken, coasting })
+            }
+          }
+          // Follow the reader's position (possibly coasted)
+          const t2 = trackRef.current
           let target = scrollPosRef.current
-          if (t.done) {
+          if (t2.done) {
             target = maxScroll
           } else {
-            const el = t.cursor >= 0 ? wordRefs.current[t.cursor] : null
+            const el = t2.cursor >= 0 ? wordRefs.current[t2.cursor] : null
             if (el) target = el.offsetTop - vp.clientHeight * READING_LINE
           }
           target = Math.max(0, Math.min(target, maxScroll))
@@ -353,13 +426,15 @@ export default function ReadView() {
 
   const micRingClass = `mic-ring${isSpeaking ? '' : ' paused'}`
 
-  // Word-tracking display state for a token index: '' | 'spoken' | 'current'.
-  // Dimming follows the COMMITTED cursor (certain); the highlight follows the
-  // PROVISIONAL cursor (the tentative tail of the latest partial).
+  // Word-tracking display state for a token index: '' | 'spoken' | 'current'
+  // | 'coasted'. Dimming follows the COMMITTED cursor (certain); the highlight
+  // follows the display cursor. When the display cursor is coasting ahead of
+  // the recognizer, the current word renders as 'coasted' (highlight without
+  // the confirming underline) so the distinction is visible.
   function tokenTrackClass(i) {
     if (!track.active) return ''
     if (track.done || (track.committed >= 0 && i < track.committed)) return ' tok-spoken'
-    if (i === track.cursor) return ' tok-current'
+    if (i === track.cursor) return track.coasting ? ' tok-coasted' : ' tok-current'
     return ''
   }
 

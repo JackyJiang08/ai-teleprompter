@@ -247,6 +247,26 @@ it must retreat from — the true wrong-teleport signal) and **final cursor
 error is 0** on every clean and misread read; the legacy matcher on the same
 fixtures makes 34 cross-sentence jumps to the current matcher's 6.
 
+**Display coasting (`src/lib/coasting.js`, on by default).** The recognizer
+lags the voice by a partial or two, and on a hard phrase it can go quiet for
+a second or more; without help the highlight would freeze there even as the
+reader keeps talking. Coasting keeps the *display* cursor moving: when the
+frequency-based voice-activity signal says the reader is voicing but no new
+partial has arrived for `COAST_GAP_MS` (800 ms), the display word advances at
+the reader's recently measured rate (a rolling words-per-second estimate from
+committed advances, `createReadingRate`), capped `COAST_CAP_WORDS` (8) past
+the committed position, and eases back to the truth on the next real match.
+It is **display only** — the committed cursor, and therefore every accuracy
+metric, is untouched — so a coasted word is rendered with the accent colour
+but without the confirming underline (`tok-coasted`). Because the tracker's
+own `speaking` flag drops ~900 ms after the last partial (exactly when
+coasting is wanted), `ReadView` runs the frequency VAD engine (§3.2)
+alongside the speech tracker purely to supply the "still voicing" signal.
+`createReadingRate` and the capped `coastDisplayWords` are pure and
+unit-tested (`coasting.test.js`); `scripts/track-replay.mjs` reports the
+worst within-session display stall coasting-off vs coasting-on (on the
+fixture suite, 4.2 s → 2.1 s). A Settings toggle turns it off.
+
 **Recognition biasing.** Three layers, all optional and silent on failure:
 
 - `contextualStrings` (all supported macOS versions): the frontend passes

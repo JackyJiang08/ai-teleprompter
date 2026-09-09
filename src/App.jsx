@@ -69,6 +69,7 @@ export default function App() {
         autoScroll:  cfg.autoScroll  ?? cfg.auto_scroll  ?? false,
         micDeviceId: cfg.micDeviceId ?? cfg.mic_device_id ?? 'default',
         wordTracking: cfg.wordTracking ?? cfg.word_tracking ?? true,
+        coasting: cfg.coasting ?? true,
         trackingHints: cfg.trackingHints ?? cfg.tracking_hints ?? '',
         aiProvider:   cfg.aiProvider   ?? cfg.ai_provider   ?? '',
         aiModel:      cfg.aiModel      ?? cfg.ai_model      ?? '',
@@ -97,7 +98,7 @@ export default function App() {
       const patch = {}
       const keys = ['mode','theme','scrollSpeed','scroll_speed','opacity','threshold',
                     'autoScroll','auto_scroll','micDeviceId','mic_device_id','fontSize','font_size',
-                    'wordTracking','word_tracking','trackingHints','tracking_hints',
+                    'wordTracking','word_tracking','coasting','trackingHints','tracking_hints',
                     'aiProvider','ai_provider','aiModel','ai_model','aiLocalUrl','ai_local_url']
       keys.forEach(k => { if (cfg[k] !== undefined) patch[k] = cfg[k] })
       // Normalise snake_case → camelCase

@@ -68,6 +68,7 @@ export default function SettingsView() {
   const [mics, setMics] = useState([{ deviceId: 'default', label: 'Default microphone' }])
   const [micId, setMicId] = useState('default')
   const [wordTracking, setWordTracking] = useState(true)
+  const [coasting, setCoasting] = useState(true)
   const [trackingHints, setTrackingHints] = useState('')
   const [speechStatus, setSpeechStatus] = useState(null)
   const [speechNotice, setSpeechNotice] = useState('')
@@ -169,6 +170,7 @@ export default function SettingsView() {
     }
     if (c.micDeviceId)  setMicId(c.micDeviceId)
     if (c.wordTracking != null) setWordTracking(!!c.wordTracking)
+    if (c.coasting != null) setCoasting(!!c.coasting)
     if (c.trackingHints !== undefined) setTrackingHints(c.trackingHints)
     if (c.aiProvider !== undefined) setAiProvider(c.aiProvider)
     if (c.aiPrefs && typeof c.aiPrefs === 'object') setAiPrefs(c.aiPrefs)
@@ -275,6 +277,11 @@ export default function SettingsView() {
   function handleMic(deviceId) {
     setMicId(deviceId)
     API.setConfig({ micDeviceId: deviceId })
+  }
+
+  function handleCoasting(checked) {
+    setCoasting(checked)
+    API.setConfig({ coasting: checked })
   }
 
   function handleWordTracking(checked) {
@@ -398,6 +405,16 @@ export default function SettingsView() {
                 Boosts recognition of proper nouns and jargon while reading.
                 Optional pronunciation: word=phonemes (X-SAMPA). Takes effect
                 at the next reading session.
+              </span>
+            </div>
+            <Row label="Coasting">
+              <Toggle checked={coasting} onChange={handleCoasting} />
+            </Row>
+            <div className="s-row">
+              <span className="s-note">
+                Keeps the highlight moving at your reading pace during brief
+                recognizer lags, so it never freezes while you speak. Display
+                only — it never affects where tracking has confirmed.
               </span>
             </div>
             <div className="s-row">
