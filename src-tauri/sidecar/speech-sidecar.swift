@@ -15,6 +15,7 @@
 //        substring, timestamp (s, from session audio start), duration (s),
 //        confidence (0..1). "text" stays for display/back-compat.
 //   {"type":"final","session":1,"text":"…","words":[…]}      // session then increments
+//   {"type":"vad","speaking":true|false,"floor":0.0042}       // voicing-state edges only
 //   {"type":"error","code":"...","message":"...","fatal":true|false}
 // Every message additionally carries "t" (ms since epoch), added by emit().
 //
@@ -48,6 +49,16 @@ func emit(_ obj: [String: Any]) {
 func fatalError(code: String, message: String) -> Never {
     emit(["type": "error", "code": code, "message": message, "fatal": true])
     exit(2)
+}
+
+// Env-gated diagnostics to stderr (never on the stdout NDJSON channel).
+// SIDECAR_DEBUG=1 turns on the live-path trace: input format, periodic RMS +
+// endpointer state, and every session rotation. Used to diagnose the live
+// microphone path (see docs/ARCHITECTURE.md §3.1 — Live-path smoke test).
+let sidecarDebug = ProcessInfo.processInfo.environment["SIDECAR_DEBUG"] == "1"
+func dbg(_ s: String) {
+    if !sidecarDebug { return }
+    FileHandle.standardError.write(Data(("[dbg] " + s + "\n").utf8))
 }
 
 // ── args ───────────────────────────────────────────────────
@@ -159,8 +170,26 @@ guard recognizer.supportsOnDeviceRecognition else {
 // a reader produces. This keeps any one session's transcript short (no head
 // truncation on long readings) and is identical for microphone and
 // --audio-file input, since both funnel through appendBuffer().
-let SILENCE_RMS_THRESHOLD: Float = 0.006   // below this RMS is treated as silence
+// Endpointing tuning. The silence threshold is ADAPTIVE — a fixed value can't
+// serve both a silent room and a fan-noise room, and real microphone speech
+// levels (RMS ~0.006–0.05 depending on distance and gain) straddle any fixed
+// line. Instead a rolling noise floor tracks the quietest recent audio and
+// the threshold sits a margin above it, clamped to sane bounds.
 let SILENCE_MS_TO_ENDPOINT: Double = 600   // pause this long → finalize + rotate
+let VAD_SILENCE_MS: Double = 350           // pause this long → "not voicing" (coasting signal)
+let FLOOR_FALL: Float = 0.3                // noise floor tracks a new minimum quickly…
+let FLOOR_RISE: Float = 0.0008             // …and rises very slowly (speech can't drag it up)
+let THRESH_MARGIN_MULT: Float = 3.0        // threshold = floor * mult + add, clamped
+let THRESH_MARGIN_ADD: Float = 0.0015
+let THRESH_MIN: Float = 0.004
+// Upper clamp. It only engages once the noise floor exceeds ~0.02 RMS (a
+// genuinely noisy room, ≈ −34 dBFS); below that the threshold is set by the
+// floor×margin or THRESH_MIN and this bound is inert. It sits above the
+// per-buffer peaks of ~−30 dBFS pink noise (measured max ≈ 0.053) so short
+// inter-sentence pauses still register as silence under that noise, and well
+// below normal speech (RMS ≈ 0.10–0.22) so voicing is never misread as
+// silence. See the "noisy" fixture family (docs/ARCHITECTURE.md §3.3).
+let THRESH_MAX: Float = 0.060
 
 final class Pipeline: NSObject {
     let recognizer: SFSpeechRecognizer
@@ -177,6 +206,36 @@ final class Pipeline: NSObject {
     var awaitingSpeech = false     // rotated on silence; wait for speech to resume
     var silentSeconds = 0.0        // running silent-audio duration
 
+    // Adaptive noise floor (guarded by `lock`). A fixed RMS threshold can't
+    // serve a silent room and a noisy one, and live mic levels straddle any
+    // constant. The floor tracks the quietest recent audio: it snaps down fast
+    // toward a new minimum and creeps up slowly, so speech energy never drags
+    // it up. The silence threshold is derived from it each buffer, clamped.
+    var noiseFloor: Float = THRESH_MIN / THRESH_MARGIN_MULT   // seed near the min threshold
+    var floorSeeded = false
+
+    // VAD edge tracking (guarded by `lock`). Voicing = RMS above threshold;
+    // we emit a {"type":"vad"} only when the debounced state flips, so the
+    // frontend has one authoritative coasting signal without a second mic.
+    var vadSpeaking = false
+    var vadSilentSeconds = 0.0     // running sub-threshold time while "speaking"
+
+    // Zero-gap rotation (guarded by `lock`): between endAudio() on the old
+    // request and the new session's request going live, incoming audio has
+    // nowhere to go. Rather than drop it — which loses the first words of the
+    // resumed line — buffer it and replay it, in order, into the next
+    // request. Bounded so a recognizer that never finalizes can't grow it
+    // unboundedly; the watchdog rotates before that anyway.
+    var pendingBuffers: [AVAudioPCMBuffer] = []
+    var pendingSeconds = 0.0
+    let maxPendingSeconds = 3.0
+
+    // Debug RMS accumulation (SIDECAR_DEBUG only)
+    var dbgBufCount = 0
+    var dbgRmsMax: Float = 0
+    var dbgRmsSum: Float = 0
+    var dbgLastLog = Date()
+
     init(recognizer: SFSpeechRecognizer) {
         self.recognizer = recognizer
         super.init()
@@ -189,9 +248,21 @@ final class Pipeline: NSObject {
         let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
 
         lock.lock()
-        let req = self.request
         var shouldEndpoint = false
-        if rms >= SILENCE_RMS_THRESHOLD {
+
+        // Update the adaptive noise floor, then derive this buffer's silence
+        // threshold. Snap down fast toward a quieter minimum; creep up slowly.
+        if !floorSeeded {
+            noiseFloor = rms
+            floorSeeded = true
+        } else if rms < noiseFloor {
+            noiseFloor += (rms - noiseFloor) * FLOOR_FALL
+        } else {
+            noiseFloor += (rms - noiseFloor) * FLOOR_RISE
+        }
+        let threshold = min(THRESH_MAX, max(THRESH_MIN, noiseFloor * THRESH_MARGIN_MULT + THRESH_MARGIN_ADD))
+
+        if rms >= threshold {
             // Speech: reset the silence run; re-arm the endpointer.
             silentSeconds = 0
             awaitingSpeech = false
@@ -204,10 +275,54 @@ final class Pipeline: NSObject {
                 awaitingSpeech = true
             }
         }
+
+        // VAD edge detection (drives frontend coasting). Rising edge fires the
+        // instant RMS clears the threshold; falling edge waits VAD_SILENCE_MS
+        // of sub-threshold audio so a brief inter-word dip doesn't flap it.
+        var vadEdge: Bool? = nil
+        if rms >= threshold {
+            vadSilentSeconds = 0
+            if !vadSpeaking { vadSpeaking = true; vadEdge = true }
+        } else if vadSpeaking {
+            vadSilentSeconds += seconds
+            if vadSilentSeconds * 1000 >= VAD_SILENCE_MS { vadSpeaking = false; vadEdge = false }
+        }
+        let vadFloor = noiseFloor
+        // Route the buffer: to the live request, or — when none is live (mid
+        // rotation) — into the bounded replay queue so nothing is lost.
+        let liveReq = self.request
+        if liveReq == nil {
+            pendingBuffers.append(buffer)
+            pendingSeconds += seconds
+            while pendingSeconds > maxPendingSeconds && !pendingBuffers.isEmpty {
+                let dropped = pendingBuffers.removeFirst()
+                pendingSeconds -= Double(dropped.frameLength) / dropped.format.sampleRate
+            }
+        }
+        let dbgHas = hasTranscript, dbgAwait = awaitingSpeech, dbgSilent = silentSeconds, dbgSess = session
+        let dbgThr = threshold
         lock.unlock()
 
-        req?.append(buffer)
-        if shouldEndpoint { endpoint() }
+        // Emit the voicing edge (outside the lock — emit() takes stdout).
+        if let speaking = vadEdge {
+            emit(["type": "vad", "speaking": speaking, "floor": Double(vadFloor)])
+        }
+
+        if sidecarDebug {
+            dbgBufCount += 1
+            dbgRmsMax = max(dbgRmsMax, rms)
+            dbgRmsSum += rms
+            if Date().timeIntervalSince(dbgLastLog) >= 0.3 {
+                let mean = dbgBufCount > 0 ? dbgRmsSum / Float(dbgBufCount) : 0
+                dbg(String(format: "rms mean=%.5f max=%.5f thr=%.5f floor=%.5f | silent=%.2fs hasTx=%@ awaiting=%@ spk=%@ sess=%d buffers=%d",
+                    mean, dbgRmsMax, dbgThr, vadFloor, dbgSilent,
+                    dbgHas ? "Y":"N", dbgAwait ? "Y":"N", vadSpeaking ? "Y":"N", dbgSess, dbgBufCount))
+                dbgBufCount = 0; dbgRmsMax = 0; dbgRmsSum = 0; dbgLastLog = Date()
+            }
+        }
+
+        liveReq?.append(buffer)
+        if shouldEndpoint { dbg("→ endpoint (silence \(String(format: "%.2f", dbgSilent))s, sess \(dbgSess))"); endpoint() }
     }
 
     // Silence endpoint: close the audio so the recognizer delivers its real
@@ -242,11 +357,13 @@ final class Pipeline: NSObject {
     func startAudio() throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
+        dbg("input format: \(format.sampleRate) Hz, \(format.channelCount) ch, commonFormat=\(format.commonFormat.rawValue)")
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
             self?.appendBuffer(buffer)
         }
         engine.prepare()
         try engine.start()
+        dbg("AVAudioEngine started (running=\(engine.isRunning))")
     }
 
     // Measurement mode: stream an audio file into the recognizer at
@@ -301,9 +418,17 @@ final class Pipeline: NSObject {
             lock.unlock()
             if let lm = lm { req.customizedLanguageModel = lm }
         }
+        // Go live and replay any audio buffered during the rotation gap, in
+        // order, BEFORE any new live buffer can append — done under one lock
+        // so the queued (older) and live (newer) audio can't interleave.
         lock.lock()
+        for b in pendingBuffers { req.append(b) }
+        let replayed = pendingBuffers.count
+        pendingBuffers.removeAll()
+        pendingSeconds = 0
         request = req
         lock.unlock()
+        if replayed > 0 { dbg("startSession: replayed \(replayed) buffered audio buffers") }
         sessionStart = Date()
 
         let current = session
@@ -360,10 +485,15 @@ final class Pipeline: NSObject {
         lock.lock()
         hasTranscript = false
         silentSeconds = 0
+        let s = session
         lock.unlock()
+        dbg("advance: session \(s) → \(s + 1)")
         task = nil
         session += 1
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+        // Start the next session immediately (no artificial delay) so the
+        // audio buffered during the gap is replayed at once — the old task has
+        // already delivered its final, so only one task is ever live.
+        DispatchQueue.main.async { [weak self] in
             self?.startSession()
         }
     }
@@ -377,7 +507,9 @@ final class Pipeline: NSObject {
         request = nil
         hasTranscript = false
         silentSeconds = 0
+        let s = session
         lock.unlock()
+        dbg("hardRotate: session \(s) → \(s + 1)")
         task?.cancel()
         task = nil
         session += 1
