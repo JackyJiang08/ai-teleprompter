@@ -34,6 +34,12 @@
 // A single advance may skip at most this many script words (jump rule) on a
 // two-word (bigram) anchor.
 export const MAX_JUMP = 6
+// Line completion: when a recognizer FINAL arrives (delivered at the pause
+// after a line) and at most this many words of the current line remain
+// uncommitted, commit them — the recognizer dropped the line's last word or
+// two at the pause. Kept small so a final delivered at a MID-line pause
+// (many words still to come) can never over-advance the committed cursor.
+export const LINE_COMPLETE_SLACK = 4
 // A three-word (trigram) anchor is strong enough to justify a much longer
 // forward resync — this recovers when the recognizer drops a whole clause or
 // sentence (a live hiccup, or a low-fidelity stretch of audio) and the reader
@@ -244,7 +250,17 @@ function fuzzyEquals(scriptWord, spoken) {
 //     for the replay tooling and tests (dev-only, not a stable API).
 export function createCursorMatcher(scriptTokens) {
   const entries = []
+  // lineEndEntry[i] = index of the last matchable word on entry i's line
+  // (before the next newline token). Used by the line-completion rule below.
+  const lineEndEntry = []
+  let lineStart = 0
   scriptTokens.forEach((tok, tokenIndex) => {
+    if (tok.type === 'newline') {
+      const lineEnd = entries.length - 1
+      for (let k = lineStart; k < entries.length; k++) lineEndEntry[k] = lineEnd
+      lineStart = entries.length
+      return
+    }
     if (tok.type !== 'word') return
     const { primary, alts } = expandWordForms(tok.text)
     if (!primary.length) return
@@ -260,6 +276,8 @@ export function createCursorMatcher(scriptTokens) {
     })
   })
   const total = entries.length
+  // Any trailing entries with no closing newline form a final line.
+  for (let k = lineStart; k < total; k++) lineEndEntry[k] = total - 1
 
   let committed = 0        // entries consumed for sure
   let provisional = 0      // display cursor (committed + tentative tail)
@@ -458,6 +476,26 @@ export function createCursorMatcher(scriptTokens) {
       }
     }
     if (committed < prevCommitted) backtracks++
+
+    // Line completion: a final is delivered at the pause after a line, so if
+    // only the line's last few words remain uncommitted, the recognizer
+    // dropped them at the pause — commit them, so the next session doesn't
+    // have to jump to catch up (which would otherwise register as a benign
+    // cross-sentence jump). Two guards keep this from ever over-advancing:
+    //   • LINE_COMPLETE_SLACK — a final at a MID-line pause, with many words
+    //     of the line still to come, is far from the line end and untouched.
+    //   • only a NON-final line is completed — the last line has no following
+    //     session to catch up, so there is nothing to pre-empt, and this
+    //     leaves a final that lands within a short single-line script (the
+    //     common shape in isolation) exactly where the recognizer put it.
+    if (isFinal && committed < total) {
+      const lineEnd = lineEndEntry[committed]
+      if (lineEnd >= committed && lineEnd + 1 < total &&
+          lineEnd - committed <= LINE_COMPLETE_SLACK) {
+        for (let e = committed; e <= lineEnd; e++) confirmedInSession.add(e)
+        committed = lineEnd + 1
+      }
+    }
 
     // Provisional display cursor: align the full current transcript from the
     // session base; never behind the committed cursor.

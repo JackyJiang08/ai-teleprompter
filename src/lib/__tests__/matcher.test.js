@@ -154,16 +154,21 @@ describe('stopword rule', () => {
   )
 
   it('a stray stopword never justifies a jump', () => {
+    // Mid-line reading (no pause yet) is a partial, not a final.
     const m = createCursorMatcher(tokens)
-    const pos = commit(m, 1, 'we built the i')
-    expect(pos.matchedCount).toBe(3) // "we built the", still expecting "tracking"
+    const pos = m.feed(1, P('we built the i'))
+    // the provisional cursor is still inside sentence 1, not teleported to
+    // the "I" that begins sentence 2
+    expect(tokens[pos.provisionalTokenIndex].text).not.toBe('I')
+    expect(pos.provisionalCount).toBeLessThanOrEqual(4)
     expect(m.stats().jumps).toHaveLength(0)
   })
 
   it('a stopword still confirms the next expected word', () => {
     const m = createCursorMatcher(tokens)
-    const pos = commit(m, 1, 'we built the') // "the" advanced the cursor by 1
-    expect(pos.matchedCount).toBe(3)
+    const pos = m.feed(1, P('we built the tracking engine')) // "the" (stopword) confirmed word 3
+    expect(pos.provisionalCount).toBe(5) // we built the tracking engine
+    expect(m.stats().jumps).toHaveLength(0)
   })
 
   it('regression: the stray-I mid-sentence does not teleport to the next sentence', () => {
@@ -263,6 +268,42 @@ describe('a final is authoritative', () => {
     // "two" misheard as XX in the final, but everything after realigns
     expect(pos.matchedCount).toBe(9)
     expect(pos.done).toBe(true)
+  })
+})
+
+describe('line completion on a final', () => {
+  // A final is delivered at the pause after a line, so its last few dropped
+  // words are committed — the next line's session then aligns from the true
+  // boundary instead of jumping to catch up.
+  const tokens = scriptTokens(
+    'Alpha bravo charlie delta echo foxtrot.',   // line 1, entries 0-5
+    'Golf hotel india juliet kilo lima.',         // line 2, entries 6-11
+  )
+
+  it("completes a non-final line whose last words the recognizer dropped", () => {
+    const m = createCursorMatcher(tokens)
+    // recognizer got only the first four words of line 1, then the pause
+    const pos = m.feed(1, F('alpha bravo charlie delta'))
+    expect(pos.matchedCount).toBe(6) // echo + foxtrot completed to the line end
+    expect(tokens[pos.cursorTokenIndex].text).toBe('Golf')
+  })
+
+  it('does not complete past LINE_COMPLETE_SLACK (a genuine mid-line pause)', () => {
+    const midTokens = scriptTokens(
+      'One two three four five six seven eight nine ten eleven.', // 11-word line
+      'Next line here to make the first one non-final.',
+    )
+    const m = createCursorMatcher(midTokens)
+    const pos = m.feed(1, F('one two three')) // 8 words still to come — far from end
+    expect(pos.matchedCount).toBe(3) // not completed
+  })
+
+  it('never completes the last line (nothing follows to catch up)', () => {
+    const single = scriptTokens('alpha bravo charlie delta echo foxtrot')
+    const m = createCursorMatcher(single)
+    const pos = m.feed(1, F('alpha bravo charlie delta')) // within slack of the end
+    expect(pos.matchedCount).toBe(4) // left where the recognizer put it
+    expect(pos.done).toBe(false)
   })
 })
 

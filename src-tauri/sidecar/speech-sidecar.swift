@@ -149,6 +149,19 @@ guard recognizer.supportsOnDeviceRecognition else {
 }
 
 // ── recognition pipeline ───────────────────────────────────
+// Silence-based endpointing (both live and file feed): Apple's on-device
+// recognizer never emits an isFinal on its own for a continuous
+// buffer-append request, and its partial-result segment timestamps are
+// placeholders — only a *final* result carries real timestamps. So the
+// pipeline watches the audio energy itself, and when the speaker pauses for
+// SILENCE_MS it calls endAudio() to force a real final (real timestamps) and
+// rotate to a fresh session — exactly the sentence-boundary session rotation
+// a reader produces. This keeps any one session's transcript short (no head
+// truncation on long readings) and is identical for microphone and
+// --audio-file input, since both funnel through appendBuffer().
+let SILENCE_RMS_THRESHOLD: Float = 0.006   // below this RMS is treated as silence
+let SILENCE_MS_TO_ENDPOINT: Double = 600   // pause this long → finalize + rotate
+
 final class Pipeline: NSObject {
     let recognizer: SFSpeechRecognizer
     let engine = AVAudioEngine()
@@ -159,20 +172,78 @@ final class Pipeline: NSObject {
     var sessionStart = Date()
     var quickFailures = 0
 
+    // Endpointing state (guarded by `lock`).
+    var hasTranscript = false      // this session emitted at least one partial
+    var awaitingSpeech = false     // rotated on silence; wait for speech to resume
+    var silentSeconds = 0.0        // running silent-audio duration
+
     init(recognizer: SFSpeechRecognizer) {
         self.recognizer = recognizer
         super.init()
+    }
+
+    // Single append path for both input sources: measures buffer energy, runs
+    // the silence endpointer, then appends to the current request.
+    func appendBuffer(_ buffer: AVAudioPCMBuffer) {
+        let rms = Pipeline.bufferRMS(buffer)
+        let seconds = Double(buffer.frameLength) / buffer.format.sampleRate
+
+        lock.lock()
+        let req = self.request
+        var shouldEndpoint = false
+        if rms >= SILENCE_RMS_THRESHOLD {
+            // Speech: reset the silence run; re-arm the endpointer.
+            silentSeconds = 0
+            awaitingSpeech = false
+        } else {
+            // Silence: once a pause exceeds the threshold and this session has
+            // produced transcript, finalize it (once) and wait for speech.
+            silentSeconds += seconds
+            if hasTranscript && !awaitingSpeech && silentSeconds * 1000 >= SILENCE_MS_TO_ENDPOINT {
+                shouldEndpoint = true
+                awaitingSpeech = true
+            }
+        }
+        lock.unlock()
+
+        req?.append(buffer)
+        if shouldEndpoint { endpoint() }
+    }
+
+    // Silence endpoint: close the audio so the recognizer delivers its real
+    // final (with real segment timestamps); the isFinal callback then emits
+    // it and advances to a fresh session. A watchdog forces a hard rotate if
+    // no final arrives, so a stuck recognizer can't strand the pipeline.
+    func endpoint() {
+        lock.lock()
+        request?.endAudio()
+        request = nil
+        let endedSession = session
+        lock.unlock()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self else { return }
+            self.lock.lock()
+            let stuck = (self.session == endedSession && self.request == nil)
+            self.lock.unlock()
+            if stuck { self.hardRotate() }
+        }
+    }
+
+    static func bufferRMS(_ buffer: AVAudioPCMBuffer) -> Float {
+        guard let data = buffer.floatChannelData else { return 0 }
+        let n = Int(buffer.frameLength)
+        if n == 0 { return 0 }
+        var sum: Float = 0
+        let ch = data[0]
+        for i in 0..<n { let s = ch[i]; sum += s * s }
+        return (sum / Float(n)).squareRoot()
     }
 
     func startAudio() throws {
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-            guard let self = self else { return }
-            self.lock.lock()
-            let req = self.request
-            self.lock.unlock()
-            req?.append(buffer)
+            self?.appendBuffer(buffer)
         }
         engine.prepare()
         try engine.start()
@@ -191,10 +262,7 @@ final class Pipeline: NSObject {
                 guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: chunk) else { break }
                 do { try file.read(into: buf, frameCount: chunk) } catch { break }
                 if buf.frameLength == 0 { break }
-                self.lock.lock()
-                let req = self.request
-                self.lock.unlock()
-                req?.append(buf)
+                self.appendBuffer(buf)
                 // pace to real time
                 Thread.sleep(forTimeInterval: Double(buf.frameLength) / format.sampleRate)
             }
@@ -210,8 +278,8 @@ final class Pipeline: NSObject {
         lock.lock()
         customLM = config
         lock.unlock()
-        // Rotate so the next session picks up the biased model
-        rotateSession()
+        // Hard-rotate so the next session picks up the biased model
+        hardRotate()
     }
 
     func startSession() {
@@ -256,8 +324,9 @@ final class Pipeline: NSObject {
                 if result.isFinal {
                     emit(["type": "final", "session": current, "text": text,
                           "confidence": confidence, "words": words])
-                    self.rotateSession()
+                    self.advance()
                 } else {
+                    self.lock.lock(); self.hasTranscript = true; self.lock.unlock()
                     emit(["type": "partial", "session": current, "text": text,
                           "confidence": confidence, "words": words])
                 }
@@ -279,20 +348,39 @@ final class Pipeline: NSObject {
                 }
                 emit(["type": "error", "code": "recognizer_error",
                       "message": error.localizedDescription, "fatal": false])
-                self.rotateSession()
+                self.hardRotate()
             }
         }
     }
 
-    func rotateSession() {
+    // Advance to the next session after the recognizer delivered a final of
+    // its own accord (the isFinal callback). The task has already completed —
+    // do not cancel it (cancel would discard the just-delivered final).
+    func advance() {
+        lock.lock()
+        hasTranscript = false
+        silentSeconds = 0
+        lock.unlock()
+        task = nil
+        session += 1
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            self?.startSession()
+        }
+    }
+
+    // Hard rotate: abandon the current session outright (custom-LM adoption,
+    // recoverable errors, or the endpoint watchdog). Cancels the in-flight
+    // task, discarding any pending result, and starts fresh.
+    func hardRotate() {
         lock.lock()
         request?.endAudio()
         request = nil
+        hasTranscript = false
+        silentSeconds = 0
         lock.unlock()
         task?.cancel()
         task = nil
         session += 1
-        // Small delay so a failing recognizer can't spin the CPU.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.startSession()
         }

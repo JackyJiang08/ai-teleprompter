@@ -5,16 +5,20 @@
  * macOS text-to-speech. For each (script, voice, rate[, alteration]):
  *
  *   1. `say -v <voice> -r <rate> -o utterance.aiff` renders the SPOKEN text
- *      (misread variants alter the spoken text; the fixture's script text
- *      stays the original), then `afconvert` normalizes it to the canonical
- *      feed format (WAVE, pcm_s16le, 22050 Hz).
- *   2. The speech sidecar runs in --audio-file mode with the matching
- *      --script and --contextual inputs — the exact recognition pipeline the
- *      app uses, at real-time pace.
+ *      as ONE continuous utterance — a warm-up lead-in, then the script with
+ *      a short pause between sentences and a trailing pause — then `afconvert`
+ *      normalizes it to the canonical feed format (WAVE, pcm_s16le, 22050 Hz).
+ *      Misread variants alter the spoken text; the fixture's script stays the
+ *      original.
+ *   2. The speech sidecar runs ONCE in --audio-file mode over that continuous
+ *      audio with the matching --script/--contextual inputs. The sidecar's
+ *      own silence endpointing rotates recognition sessions at the pauses —
+ *      exactly as it does for a live reader — so session boundaries emerge
+ *      from the recognizer, not from pre-splitting, and each session's final
+ *      carries real per-word segment timestamps.
  *   3. The complete NDJSON message stream plus the script text is saved as a
  *      gzipped fixture under tests/fixtures/tracking/, in the same shape
- *      ?trackrecord=1 produces, with generator metadata (voice, rate,
- *      alteration, audio format).
+ *      ?trackrecord=1 produces, with generator metadata.
  *
  * Run via scripts/make-fixtures.sh. Generation needs macOS (`say`,
  * `afconvert`, on-device speech recognition) and real time per fixture, so
@@ -62,6 +66,12 @@ const ALTERATIONS = {
     .replace('Let me walk you through', 'Let me walk you — Let me walk you through'),
   silence: (t) => t
     .replace('teleprompter that lives', 'teleprompter [[slnc 2000]] that lives'),
+  // New in v2.1.0: a long pause in the middle of a sentence. With the
+  // sidecar's silence endpointing this forces a session rotation MID-sentence
+  // — a session boundary that does not coincide with a sentence boundary,
+  // which is the case the restored cross-sentence-jump target must survive.
+  'midpause': (t) => t
+    .replace('right in your', 'right [[slnc 1600]] in your'),
 }
 
 const only = (() => {
@@ -84,64 +94,15 @@ function docFromText(text) {
 // A short spoken lead-in warms up the custom LM before the first sentence.
 const LEAD_IN = 'All right, here we go.'
 
-// Split a spoken utterance into breath-group segments. Each becomes its own
-// sidecar run — one recognition session ending in a final — so the fixture
-// reproduces the live recognizer's session rotation at reading pauses,
-// instead of one giant continuous session (whose transcript the recognizer
-// truncates on long scripts). Consecutive sentences are grouped until a
-// segment reaches ~MIN_SEG_WORDS words: a lone three-word sentence recognizes
-// poorly in isolation, so terse sentences ride together as a natural breath
-// group. Silence markers a misread variant injected stay in place.
-const MIN_SEG_WORDS = 10
-function splitSentences(text) {
-  const sentences = text
-    .split(/(?<=[.!?])\s+(?=[A-Z0-9"'—[])/)
-    .map(s => s.trim())
-    .filter(Boolean)
-  const segments = []
-  let cur = ''
-  const wc = s => s.split(/\s+/).filter(Boolean).length
-  for (const sent of sentences) {
-    cur = cur ? `${cur} ${sent}` : sent
-    if (wc(cur) >= MIN_SEG_WORDS) { segments.push(cur); cur = '' }
-  }
-  if (cur) {
-    if (segments.length) segments[segments.length - 1] += ` ${cur}`
-    else segments.push(cur)
-  }
-  return segments
-}
-
-// Run the sidecar once over one synthesized audio segment; return its
-// recognition messages (partial/final/lm/feed/error).
-async function recognizeSegment(spokenSegment, { voice, rate, scriptFile, contextualFile, dir, i, leadIn }) {
-  const aiff = join(dir, `seg-${i}.aiff`)
-  const wav = join(dir, `seg-${i}.wav`)
-  const prefix = leadIn ? `${LEAD_IN} [[slnc 400]] ` : ''
-  execFileSync('say', ['-v', voice, '-r', String(rate), '-o', aiff, `${prefix}${spokenSegment}`])
-  execFileSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@22050', '-c', '1', aiff, wav])
-
-  const messages = []
-  const sidecar = spawn(SIDECAR, [
-    '--locale', 'en-US',
-    '--audio-file', wav,
-    '--script', scriptFile,
-    '--contextual', contextualFile,
-  ], { stdio: ['ignore', 'pipe', 'inherit'] })
-  const rl = readline.createInterface({ input: sidecar.stdout })
-  rl.on('line', (line) => {
-    try { messages.push({ recv: Date.now(), ...JSON.parse(line) }) } catch {}
-  })
-  await new Promise((resolve) => {
-    const iv = setInterval(() => {
-      const end = messages.find(m => m.type === 'feed' && m.state === 'end')
-      const fatal = messages.find(m => m.type === 'error' && m.fatal)
-      if (fatal) { clearInterval(iv); resolve() }
-      if (end && Date.now() - end.recv > 1500) { clearInterval(iv); resolve() }
-    }, 100)
-  })
-  sidecar.kill()
-  return messages
+// Turn the script's spoken text into one continuous utterance: insert a pause
+// after each sentence and a trailing pause so the sidecar's silence
+// endpointing rotates a session per sentence (the last one included), and
+// prepend the warm-up lead-in. Silence markers a misread variant injected
+// (e.g. a mid-sentence [[slnc]]) are preserved and produce their own session
+// rotations.
+function toContinuousSpoken(spokenText) {
+  const paced = spokenText.replace(/([.!?])(\s+)(?=[A-Z0-9"'—[])/g, '$1 [[slnc 650]] $2')
+  return `${LEAD_IN} [[slnc 400]] ${paced} [[slnc 800]]`
 }
 
 async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, alteration }) {
@@ -152,30 +113,40 @@ async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, al
     const contextualFile = join(dir, 'contextual.txt')
     writeFileSync(contextualFile, buildContextualStrings(scriptText).join('\n'))
 
-    const segments = splitSentences(spokenText)
-    const messages = []
-    let sessionOffset = 0
-    for (let s = 0; s < segments.length; s++) {
-      const segMsgs = await recognizeSegment(segments[s], {
-        voice, rate, scriptFile, contextualFile, dir, i: s, leadIn: s === 0,
-      })
-      // Renumber sessions to increase globally across segments, and mark each
-      // segment's last partial as the sentence's final (the recognizer
-      // finalizes when the reader pauses at the sentence boundary).
-      const pf = segMsgs.filter(m => m.type === 'partial' || m.type === 'final')
-      const localSessions = [...new Set(pf.map(m => m.session))]
-      const remap = new Map(localSessions.map((sid, k) => [sid, sessionOffset + k + 1]))
-      const lastBySession = new Map()
-      for (const m of segMsgs) {
-        if (m.session != null && remap.has(m.session)) m.session = remap.get(m.session)
-        if (m.type === 'partial' || m.type === 'final') lastBySession.set(m.session, m)
-      }
-      for (const m of lastBySession.values()) if (m.type === 'partial') m.type = 'final'
-      sessionOffset += localSessions.length
-      messages.push(...segMsgs.filter(m => m.type === 'partial' || m.type === 'final'))
-    }
+    const aiff = join(dir, 'utterance.aiff')
+    const wav = join(dir, 'utterance.wav')
+    execFileSync('say', ['-v', voice, '-r', String(rate), '-o', aiff, toContinuousSpoken(spokenText)])
+    execFileSync('afconvert', ['-f', 'WAVE', '-d', 'LEI16@22050', '-c', '1', aiff, wav])
 
+    // ONE sidecar run over the whole utterance; the sidecar rotates sessions
+    // itself at the pauses (silence endpointing), exactly as it does live.
+    const messages = []
+    const sidecar = spawn(SIDECAR, [
+      '--locale', 'en-US',
+      '--audio-file', wav,
+      '--script', scriptFile,
+      '--contextual', contextualFile,
+    ], { stdio: ['ignore', 'pipe', 'inherit'] })
+    const rl = readline.createInterface({ input: sidecar.stdout })
+    rl.on('line', (line) => {
+      try { messages.push({ recv: Date.now(), ...JSON.parse(line) }) } catch {}
+    })
+    await new Promise((resolve) => {
+      const iv = setInterval(() => {
+        const end = messages.find(m => m.type === 'feed' && m.state === 'end')
+        const fatal = messages.find(m => m.type === 'error' && m.fatal)
+        if (fatal) { clearInterval(iv); resolve() }
+        // The trailing pause lets the last session finalize; wait a beat past
+        // feed-end for that final to arrive.
+        if (end && Date.now() - end.recv > 2500) { clearInterval(iv); resolve() }
+      }, 100)
+    })
+    sidecar.kill()
+
+    const pf = messages.filter(m => m.type === 'partial' || m.type === 'final')
     const probe = createCursorMatcher(tokenizeDoc(docFromText(scriptText)))
+    const sessions = [...new Set(pf.map(m => m.session))].length
+    const finals = pf.filter(m => m.type === 'final').length
     const fixture = {
       name,
       kind, // 'clean' | 'misread'
@@ -188,15 +159,14 @@ async function makeFixture({ name, kind, scriptText, spokenText, voice, rate, al
         rate,
         alteration: alteration || null,
         audioFormat: 'WAVE pcm_s16le 22050 Hz mono (afconvert LEI16@22050)',
-        sidecar: 'speech-sidecar --audio-file (real on-device recognition), one run per sentence',
+        sidecar: 'speech-sidecar --audio-file, single continuous feed, silence-endpointed session rotation',
       },
       expectedFinal: probe.position().total,
-      messages: messages.map(({ recv, ...m }) => m),
+      messages: pf.map(({ recv, ...m }) => m),
     }
     const outPath = join(OUT_DIR, `${name}.json.gz`)
     writeFileSync(outPath, gzipSync(JSON.stringify(fixture)))
-    const partials = messages.filter(m => m.type === 'partial' || m.type === 'final').length
-    console.log(`✅  ${name}.json.gz — ${partials} recognition messages, ${fixture.expectedFinal} script words`)
+    console.log(`✅  ${name}.json.gz — ${pf.length} messages, ${sessions} sessions, ${finals} finals, ${fixture.expectedFinal} script words`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

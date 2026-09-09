@@ -116,7 +116,9 @@ Two pipelines can drive the prompter while reading:
 
 **Process.** `src-tauri/sidecar/speech-sidecar.swift` is a standalone Swift binary compiled by `scripts/build-sidecar.sh` into `src-tauri/binaries/speech-sidecar-<target-triple>` (gitignored; built automatically by `beforeDevCommand`/`beforeBuildCommand`) and bundled through `externalBin`. It runs `SFSpeechRecognizer` with `requiresOnDeviceRecognition = true`, `shouldReportPartialResults = true`, `taskHint = .dictation`, and `addsPunctuation = false`, fed by an `AVAudioEngine` input tap. **All recognition is on-device; nothing leaves the machine** — the binary's only output channel is NDJSON on stdout to the parent app. It refuses to run at all (fatal `ondevice_unsupported`) if the selected locale's on-device model is missing.
 
-**Protocol** (one JSON object per stdout line, every message stamped with `t` = ms since epoch): `ready {locale, onDevice}`, `partial`/`final {session, text, confidence, words}` — `words` is the per-segment payload (`[{w, t, d, c}]`: substring, timestamp in seconds from the session's audio start, duration, confidence per `SFTranscriptionSegment`; `text` remains the full formatted string, `confidence` the segment mean) — `lm {state}` (customized language model lifecycle, §3.3), `feed {state}` (measurement mode only), and `error {code, message, fatal}`. Emission is unbuffered — each line is one direct `write(2)`, so partials reach the parent the moment the recognizer produces them. Recognition tasks are rotated on final results and recoverable errors — each rotation increments `session`, each session's transcript starts empty, and errors reported by an already-rotated (canceled) session are ignored so a rotation can never cascade into more rotations. Fatal codes: `auth_denied`, `auth_restricted`, `locale_unavailable`, `ondevice_unsupported`, `audio_error`, `recognizer_storm` (three failures within 2 s of session start). Args: `--locale <id>`, `--script <path>` (script text for the customized LM, §3.3), `--contextual <path>` (newline-separated vocabulary set as `contextualStrings` on every recognition request — request-level biasing that works on all supported macOS versions), `--tricky <path>` (the user's tricky-words list, §3.3), `--audio-file <path>` (dev/measurement: feed a file at real-time pace instead of the mic).
+**Protocol** (one JSON object per stdout line, every message stamped with `t` = ms since epoch): `ready {locale, onDevice}`, `partial`/`final {session, text, confidence, words}` — `words` is the per-segment payload (`[{w, t, d, c}]`: substring, timestamp in seconds from the session's audio start, duration, confidence per `SFTranscriptionSegment`; `text` remains the full formatted string, `confidence` the segment mean) — `lm {state}` (customized language model lifecycle, §3.3), `feed {state}` (measurement mode only), and `error {code, message, fatal}`. Emission is unbuffered — each line is one direct `write(2)`, so partials reach the parent the moment the recognizer produces them. Fatal codes: `auth_denied`, `auth_restricted`, `locale_unavailable`, `ondevice_unsupported`, `audio_error`, `recognizer_storm` (three failures within 2 s of session start). Args: `--locale <id>`, `--script <path>` (script text for the customized LM, §3.3), `--contextual <path>` (newline-separated vocabulary set as `contextualStrings` on every recognition request — request-level biasing that works on all supported macOS versions), `--tricky <path>` (the user's tricky-words list, §3.3), `--audio-file <path>` (dev/measurement: feed a file at real-time pace instead of the mic).
+
+**Session rotation (silence endpointing).** Apple's on-device recognizer, run as one continuous buffer-append request, **never emits an `isFinal` on its own** and its *partial*-result segment timestamps are placeholders (uniform ~0.011 s steps) — only a result elicited by `endAudio()` carries real per-word timestamps. So the pipeline endpoints on the audio energy itself: `appendBuffer()` (the single append path for both the microphone tap and `--audio-file` feed) tracks RMS, and after a pause of `SILENCE_MS_TO_ENDPOINT` (600 ms) below `SILENCE_RMS_THRESHOLD` it calls `endAudio()` on the request. The recognizer then delivers the session's real final (with real timestamps); the `isFinal` callback emits it and `advance()`s to a fresh session — the sentence-boundary session rotation a reader produces. A watchdog hard-rotates if no final arrives within 1.5 s. This keeps any one session's transcript short (no head truncation on long readings) and makes time-based stability gating (§3.3) real, since finals now carry true timing. `advance()` (from a delivered final) does not cancel the task; `hardRotate()` (custom-LM adoption, recoverable errors, the watchdog) cancels and starts fresh. Each rotation increments `session`, each session's transcript starts empty, and errors from an already-rotated session are ignored so a rotation can't cascade.
 
 **Supervision (Rust).** `start_speech(locale, script_text)` in `src-tauri/src/lib.rs` kills any previous instance (script text is written to a temp file and forwarded as `--script` for the customized LM, §3.3), spawns the sidecar via `tauri_plugin_shell`'s `sidecar()`, and pumps its stdout: every parsed line is broadcast to all windows as a `speech-msg` event; `ready`/`error` lines are also stored in `AppState.speech_status` so the settings window can query the latest state via `get_speech_status` after the fact. Process exit surfaces as a synthetic `{"type":"terminated","code"}` message. `stop_speech` kills the child; the `RunEvent::Exit` handler guarantees the sidecar never outlives the app. Rust makes no policy decisions — restart and fallback logic live in the frontend.
 
@@ -210,6 +212,17 @@ permanently. The current matcher is built around five rules:
    more than `MAX_BACKTRACK` below its prior value, so even a truncated
    "final" (the recognizer discards the head of a very long single-session
    transcript) cannot erase committed progress.
+6. **Line completion** — a final is delivered at the pause after a line
+   (§3.1 endpointing), so if only the line's last few words remain
+   uncommitted (`LINE_COMPLETE_SLACK`, 4), the recognizer dropped them at
+   the pause — commit them, so the next line's session aligns from the true
+   boundary instead of jumping forward to catch up. Two guards keep this
+   from ever over-advancing: a final at a mid-line pause is far from the
+   line end (many words still to come) and is untouched; and the **last**
+   line is never completed (no following session needs pre-empting, and a
+   short single-line transcript is left exactly where the recognizer put
+   it). This removes the benign cross-sentence catch-ups that recognition
+   word-drops at boundaries would otherwise produce.
 
 Fuzzy matching accepts edit distance ≤ 1 for script words of 5+ letters;
 shorter words must match exactly. The public interface is unchanged
@@ -219,18 +232,20 @@ shorter words must match exactly. The public interface is unchanged
 jump/backtrack events for the tooling below.
 
 **Parameters (`MAX_JUMP`, `MAX_RESYNC`, `MAX_BACKTRACK`, `TAIL_TENTATIVE`,
-`STABLE_AGE_S`, `STOPWORDS`) were tuned against the synthesized-voice fixture
-suite** (below), not one example — the stopword list was narrowed to core
-function words (a bigram anchor already guards against teleporting, so
-content-ish words like "just"/"no"/"up" stay matchable) and the resync,
-final-authority, and backtrack-bound rules were added to fix failures the
-fixtures exposed (dropped sentences, truncated finals). On the synthetic
-teleport fixture the legacy matcher scores 1 cross-sentence jump, a 5-word
-skip, and 44% alignment on the affected sentence; the current matcher is
-clean (0 jumps, 100%). Across all 24 fixtures the current matcher's
-**overshoot is 0** (the committed cursor never reaches a position it must
-retreat from — the true wrong-teleport signal) and final cursor error is
-≤ 3 words on every clean and misread read.
+`STABLE_AGE_S`, `LINE_COMPLETE_SLACK`, `STOPWORDS`) were tuned against the
+synthesized-voice fixture suite** (below), not one example — the stopword
+list was narrowed to core function words (a bigram anchor already guards
+against teleporting, so content-ish words like "just"/"no"/"up" stay
+matchable) and the resync, final-authority, backtrack-bound, and
+line-completion rules were added to fix failures the fixtures exposed
+(dropped sentences, truncated finals, benign boundary catch-ups). On the
+synthetic teleport fixture the legacy matcher scores 1 cross-sentence jump, a
+5-word skip, and 44% alignment on the affected sentence; the current matcher
+is clean (0 jumps, 100%). Across all 24 continuous-feed fixtures the current
+matcher's **overshoot is 0** (the committed cursor never reaches a position
+it must retreat from — the true wrong-teleport signal) and **final cursor
+error is 0** on every clean and misread read; the legacy matcher on the same
+fixtures makes 34 cross-sentence jumps to the current matcher's 6.
 
 **Recognition biasing.** Three layers, all optional and silent on failure:
 
@@ -261,18 +276,30 @@ before/after comparisons.
 kept out of CI) synthesizes the fixtures from `say` text-to-speech: for each
 source script (`tests/fixtures/tracking/scripts/` — the demo library plus a
 ~200-word jargon-dense brief with product names, acronyms, and numbers) it
-renders audio per breath-group, converts to the feed format, and runs the
-real speech sidecar with the matching `--script`/`--contextual` inputs, one
-sidecar run per breath-group so the fixture reproduces the live recognizer's
-per-sentence session rotation. 23 fixtures cover three en-US voices, two
-rates (~160/200 wpm), and five misread variants (inserted fillers, a
-repeated phrase, a skipped word, a restarted sentence, a 2-second
-mid-sentence silence). `src/lib/__tests__/tracking-suite.test.js` replays
-them all in CI (they are committed, so no speech dependency there) and
-asserts the targets — overshoot 0 on every fixture, final cursor error ≤ 3,
-and no within-session stall beyond 4.5 s. The committed
-`synthetic-teleport.json` fixture reproduces the original teleport bug and
-is asserted exactly in `tracking-fixture.test.js`.
+renders the whole script as **one continuous utterance** (a warm-up lead-in,
+a short pause between sentences, a trailing pause), converts it to the feed
+format, and runs the real speech sidecar **once** in `--audio-file` mode with
+the matching `--script`/`--contextual` inputs. The sidecar's own silence
+endpointing (§3.1) rotates recognition sessions at the pauses — exactly as it
+does live — so session boundaries emerge from the recognizer rather than from
+pre-splitting, and each session's final carries real per-word timestamps.
+(v2.0.0 generated one sidecar run per breath group, which made session
+boundaries coincide with sentence boundaries and inflated the cross-sentence
+jump count; those fixtures were regenerated for v2.1.0 and the old ones
+deleted.) 24 fixtures cover three en-US voices, two rates (~160/200 wpm), and
+six misread variants (inserted fillers, a repeated phrase, a skipped word, a
+restarted sentence, a 2-second mid-sentence silence, and a long mid-sentence
+pause that forces a session rotation mid-sentence).
+`src/lib/__tests__/tracking-suite.test.js` replays them all in CI (they are
+committed, so no speech dependency there) via the same `replayFixture` the
+CLI uses, and asserts: overshoot 0 and no within-session stall beyond 4.5 s
+on every fixture; final cursor error ≤ 3; ≤ 1 cross-sentence jump on every
+fixture, and exactly 0 on the natural-rate (160 wpm) clean reads. A handful
+of fast-rate (200 wpm) clean fixtures retain a single benign forward
+catch-up where the recognizer dropped several words at a boundary
+(overshoot and final error stay 0 — the cursor is correct, not teleported).
+The committed `synthetic-teleport.json` fixture reproduces the original
+teleport bug and is asserted exactly in `tracking-fixture.test.js`.
 
 **On the stall target.** The 2-second aspiration holds for normal-density
 scripts; a long jargon-dense sentence at 160 wpm can run to ~4 s because the
