@@ -30,24 +30,29 @@ jobs:
           draft: true
           prerelease: false
           body: |
-            ## AI Teleprompter v2.1.0
+            ## AI Teleprompter v2.1.1
 
-            Word-tracking refinements on top of the v2.0.0 engine.
+            Live-microphone reliability for word tracking.
+
+            v2.1.0's tracking was only ever verified by feeding **audio files** through the recognizer, never a real microphone through the GUI — and a rotation-time bug hid there: while you spoke, the highlight could stall on the first word of each new sentence, or jump to a matching word mid-script and snap back to the start. This release fixes the live chain and adds a smoke test so it can't regress unseen again.
 
             ---
 
-            ### 🏄 Coasting — the highlight never freezes mid-phrase
+            ### 🎤 The highlight no longer stalls on the first word
 
-            The recognizer lags your voice by a moment, and on a hard phrase it can go quiet for a second or more. Coasting keeps the highlight gliding forward at your reading pace during those lags — capped a few words ahead — then eases back to the exact word the instant recognition catches up. A coasted word shows the accent highlight without the underline. It's **display only** (it never changes where tracking has confirmed), on by default, and toggleable in Settings. On the test suite the worst display freeze drops from 4.2 s to 2.1 s.
+            When the recognizer finalizes a sentence at your pause, there was a brief instant with no active recognition request — and you resume speaking right then, so the **first words of your next sentence** were being dropped, leaving the highlight stuck on word one. Audio is now buffered across that instant and replayed into the next session in order, so nothing is lost. (On the test suite, recall of resumed sentences' opening words rises sharply — fast reads went from confirming the first words of 1 in 7 sentences to the great majority.)
 
-            ### 🎯 Truer tracking, tested against real recognition
+            ### 🎚️ Tracking adapts to your room
 
-            - The speech sidecar now rotates recognition sessions on its own **silence endpointing**, at the pauses between sentences — the way a live reader speaks — which keeps each session short and its timestamps real, and prevents transcript truncation on long readings.
-            - The regression suite (macOS text-to-speech read back through the real recognizer — three voices, two rates, plus fillers, repeats, skips, a restart, and silences) is regenerated as one continuous feed per script, so it matches live use. Across all 24 fixtures the cursor never teleports and ends **exactly** on the last word; a new **line-completion** rule commits a line's last dropped words at its closing pause so the next sentence starts clean.
+            The pause detector no longer uses a single fixed loudness cutoff, which was fragile at real microphone levels and, in a noisy room, never registered silence at all — so sessions never rotated. It now tracks a rolling noise floor and sets its threshold just above it, working the same in a quiet room and over fan or café noise.
 
-            ### 📝 Consistency
+            ### 🎙️ One microphone, not two
 
-            The README's word-tracking description was corrected — the cursor self-corrects within a small bounded window rather than "never jumping backward" — and documents coasting.
+            While tracking, the app now opens a **single** microphone capture. The "still speaking?" signal that drives coasting comes from the recognition audio itself instead of a second capture that competed with it.
+
+            ### 🏄 Coasting, silence endpointing, and truer fixtures — unchanged from 2.1.0
+
+            The highlight still glides at your reading pace when the recognizer lags (coasting, display-only, toggleable), sessions still rotate on the pauses between sentences, and the regression suite still holds the cursor from ever teleporting and lands it exactly on the last word — now across **30** fixtures including tight-resume and pink-noise variants.
 
             Everything from [v2.0.0](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.0.0) — the rename with automatic migration, the four AI providers (your Claude or ChatGPT subscription with no API key, an API key, or local Ollama) with model/effort selection, and English-only on-device tracking — is unchanged. **Upgrading from 1.x?** First launch still migrates your library automatically and asks for the mic/speech permissions and the AI key again (a one-time in-app notice explains it).
 
@@ -57,8 +62,8 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.0_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
-            | 🍎 Intel Mac | `AI Teleprompter_2.1.0_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.1_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Intel Mac | `AI Teleprompter_2.1.1_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
 
             ### ⚠️ First launch
 

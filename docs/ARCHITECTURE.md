@@ -116,9 +116,15 @@ Two pipelines can drive the prompter while reading:
 
 **Process.** `src-tauri/sidecar/speech-sidecar.swift` is a standalone Swift binary compiled by `scripts/build-sidecar.sh` into `src-tauri/binaries/speech-sidecar-<target-triple>` (gitignored; built automatically by `beforeDevCommand`/`beforeBuildCommand`) and bundled through `externalBin`. It runs `SFSpeechRecognizer` with `requiresOnDeviceRecognition = true`, `shouldReportPartialResults = true`, `taskHint = .dictation`, and `addsPunctuation = false`, fed by an `AVAudioEngine` input tap. **All recognition is on-device; nothing leaves the machine** — the binary's only output channel is NDJSON on stdout to the parent app. It refuses to run at all (fatal `ondevice_unsupported`) if the selected locale's on-device model is missing.
 
-**Protocol** (one JSON object per stdout line, every message stamped with `t` = ms since epoch): `ready {locale, onDevice}`, `partial`/`final {session, text, confidence, words}` — `words` is the per-segment payload (`[{w, t, d, c}]`: substring, timestamp in seconds from the session's audio start, duration, confidence per `SFTranscriptionSegment`; `text` remains the full formatted string, `confidence` the segment mean) — `lm {state}` (customized language model lifecycle, §3.3), `feed {state}` (measurement mode only), and `error {code, message, fatal}`. Emission is unbuffered — each line is one direct `write(2)`, so partials reach the parent the moment the recognizer produces them. Fatal codes: `auth_denied`, `auth_restricted`, `locale_unavailable`, `ondevice_unsupported`, `audio_error`, `recognizer_storm` (three failures within 2 s of session start). Args: `--locale <id>`, `--script <path>` (script text for the customized LM, §3.3), `--contextual <path>` (newline-separated vocabulary set as `contextualStrings` on every recognition request — request-level biasing that works on all supported macOS versions), `--tricky <path>` (the user's tricky-words list, §3.3), `--audio-file <path>` (dev/measurement: feed a file at real-time pace instead of the mic).
+**Protocol** (one JSON object per stdout line, every message stamped with `t` = ms since epoch): `ready {locale, onDevice}`, `partial`/`final {session, text, confidence, words}` — `words` is the per-segment payload (`[{w, t, d, c}]`: substring, timestamp in seconds from the session's audio start, duration, confidence per `SFTranscriptionSegment`; `text` remains the full formatted string, `confidence` the segment mean) — `lm {state}` (customized language model lifecycle, §3.3), `vad {speaking, floor}` (voicing-state edges from the endpointer, drives display coasting — one per rising/falling transition, `floor` = the current adaptive silence floor), `feed {state}` (measurement mode only), and `error {code, message, fatal}`. Emission is unbuffered — each line is one direct `write(2)`, so partials reach the parent the moment the recognizer produces them. Fatal codes: `auth_denied`, `auth_restricted`, `locale_unavailable`, `ondevice_unsupported`, `audio_error`, `recognizer_storm` (three failures within 2 s of session start). Args: `--locale <id>`, `--script <path>` (script text for the customized LM, §3.3), `--contextual <path>` (newline-separated vocabulary set as `contextualStrings` on every recognition request — request-level biasing that works on all supported macOS versions), `--tricky <path>` (the user's tricky-words list, §3.3), `--audio-file <path>` (dev/measurement: feed a file at real-time pace instead of the mic).
 
-**Session rotation (silence endpointing).** Apple's on-device recognizer, run as one continuous buffer-append request, **never emits an `isFinal` on its own** and its *partial*-result segment timestamps are placeholders (uniform ~0.011 s steps) — only a result elicited by `endAudio()` carries real per-word timestamps. So the pipeline endpoints on the audio energy itself: `appendBuffer()` (the single append path for both the microphone tap and `--audio-file` feed) tracks RMS, and after a pause of `SILENCE_MS_TO_ENDPOINT` (600 ms) below `SILENCE_RMS_THRESHOLD` it calls `endAudio()` on the request. The recognizer then delivers the session's real final (with real timestamps); the `isFinal` callback emits it and `advance()`s to a fresh session — the sentence-boundary session rotation a reader produces. A watchdog hard-rotates if no final arrives within 1.5 s. This keeps any one session's transcript short (no head truncation on long readings) and makes time-based stability gating (§3.3) real, since finals now carry true timing. `advance()` (from a delivered final) does not cancel the task; `hardRotate()` (custom-LM adoption, recoverable errors, the watchdog) cancels and starts fresh. Each rotation increments `session`, each session's transcript starts empty, and errors from an already-rotated session are ignored so a rotation can't cascade.
+**Session rotation (silence endpointing).** Apple's on-device recognizer, run as one continuous buffer-append request, **never emits an `isFinal` on its own** and its *partial*-result segment timestamps are placeholders (uniform ~0.011 s steps) — only a result elicited by `endAudio()` carries real per-word timestamps. So the pipeline endpoints on the audio energy itself: `appendBuffer()` (the single append path for both the microphone tap and `--audio-file` feed) tracks RMS, and after a pause of `SILENCE_MS_TO_ENDPOINT` (600 ms) below an **adaptive silence threshold** it calls `endAudio()` on the request. The recognizer then delivers the session's real final (with real timestamps); the `isFinal` callback emits it and `advance()`s to a fresh session — the sentence-boundary session rotation a reader produces. A watchdog hard-rotates if no final arrives within 1.5 s. This keeps any one session's transcript short (no head truncation on long readings) and makes time-based stability gating (§3.3) real, since finals now carry true timing. `advance()` (from a delivered final) does not cancel the task; `hardRotate()` (custom-LM adoption, recoverable errors, the watchdog) cancels and starts fresh. Each rotation increments `session`, each session's transcript starts empty, and errors from an already-rotated session are ignored so a rotation can't cascade.
+
+**Adaptive silence threshold (v2.1.1).** A fixed RMS threshold cannot serve both a silent room and a noisy one, and real microphone speech levels (RMS ≈ 0.006–0.05, depending on distance and gain) straddle any constant — v2.1.0's fixed `0.006` was fragile on live audio and, above it, sessions would never rotate (nothing ever read as silence). The threshold is now derived per buffer from a rolling **noise floor**: the floor snaps down fast toward a new quieter minimum (`FLOOR_FALL`) and creeps up very slowly (`FLOOR_RISE`) so speech energy never drags it up, and the threshold sits a margin above it (`floor × 3 + 0.0015`), clamped to `[0.004, 0.040]`. The current floor is exposed on every `vad` message and in the `?trackdebug` overlay. The **noisy** fixture family (§3.3, pink noise at −30 dBFS) exercises this: with a fixed threshold those sessions never rotate; with the adaptive floor they rotate and land exactly.
+
+**Zero-gap session rotation (v2.1.1).** Rotation has a hazard: `endpoint()` calls `endAudio()` and clears `request`, and no new request is live until the delivered final triggers `advance()`/`startSession()`. Audio arriving in that window — the *first words of the next sentence*, since the reader resumes right after the pause — has nowhere to go. v2.1.0 dropped it (`request?.append` on a nil request is a no-op), stranding the committed cursor on the resumed line's later words; on a live microphone, where finalization is slower than in a file feed, this is the freeze/one-word-stall that v2.1.0 shipped with (only ever exercised through file feeds, never a real mic — the root cause behind this release). The fix is a bounded **replay queue**: while no request is live, `appendBuffer()` appends incoming buffers to `pendingBuffers` (capped at `maxPendingSeconds`, 3 s — the watchdog rotates before that); `startSession()` replays the queue into the new request, in order, *before* any live buffer, so nothing is lost and ordering is preserved. This is the queue-and-replay approach (b); concurrent on-device tasks (approach a) was rejected as a custom-LM concurrency risk. The artificial 200 ms delay `advance()` used before starting the next session is removed (`hardRotate()` keeps a 200 ms delay as an error-storm guard). Measured on a tight-resume clip, first-two-words recall rose from 2/4 to 3/4 sentences even in the file feed where the gap is smallest; the regression suite's **first-word recall** metric (§3.3) tracks it across the whole fixture set.
+
+**Live-path verification.** Because v2.1.0's live chain shipped unverified, `scripts/live-smoke.mjs` now exercises it end to end: it feeds a tight-resume clip through the built sidecar and asserts session rotation, real per-word timestamps, `vad` rising/falling edges with a floor, no overshoot, and first-word recall ≥ 75 %. It stops just short of the microphone tap itself (that needs a TCC grant and hardware); to verify the actual mic, grant Microphone + Speech Recognition to the app, open a script with `?trackdebug`, play synthesized speech through the speakers or a loopback into the mic, and watch the overlay's session/floor/voicing fields advance as each sentence is read.
 
 **Supervision (Rust).** `start_speech(locale, script_text)` in `src-tauri/src/lib.rs` kills any previous instance (script text is written to a temp file and forwarded as `--script` for the customized LM, §3.3), spawns the sidecar via `tauri_plugin_shell`'s `sidecar()`, and pumps its stdout: every parsed line is broadcast to all windows as a `speech-msg` event; `ready`/`error` lines are also stored in `AppState.speech_status` so the settings window can query the latest state via `get_speech_status` after the fact. Process exit surfaces as a synthetic `{"type":"terminated","code"}` message. `stop_speech` kills the child; the `RunEvent::Exit` handler guarantees the sidecar never outlives the app. Rust makes no policy decisions — restart and fallback logic live in the frontend.
 
@@ -260,8 +266,14 @@ It is **display only** — the committed cursor, and therefore every accuracy
 metric, is untouched — so a coasted word is rendered with the accent colour
 but without the confirming underline (`tok-coasted`). Because the tracker's
 own `speaking` flag drops ~900 ms after the last partial (exactly when
-coasting is wanted), `ReadView` runs the frequency VAD engine (§3.2)
-alongside the speech tracker purely to supply the "still voicing" signal.
+coasting is wanted), coasting needs an independent "still voicing?" signal.
+As of v2.1.1 that signal is the sidecar's own `vad` message (§3.1) — emitted
+off the same microphone tap that feeds recognition — so while word tracking
+is active there is **one** microphone capture, not two. (v2.1.0 ran a second
+`getUserMedia` frequency-VAD engine alongside the tracker for this; that
+second capture, which competed with the recognition audio engine, is gone.)
+The frequency VAD engine (§3.2) is still used, but only as the no-tracking
+fallback.
 `createReadingRate` and the capped `coastDisplayWords` are pure and
 unit-tested (`coasting.test.js`); `scripts/track-replay.mjs` reports the
 worst within-session display stall coasting-off vs coasting-on (on the
@@ -288,7 +300,11 @@ command as a JSON fixture under `tests/fixtures/tracking/`.
 `scripts/track-replay.mjs <fixture[.gz]> [--legacy]` (or `--all` for a table)
 replays a fixture through the matcher deterministically and reports
 cross-sentence jump count, max forward skip, overshoot, backtracks, final
-cursor error, max within-session stall, and per-sentence alignment rate;
+cursor error, max within-session stall, per-sentence alignment rate, and
+**first-word recall** (the fraction of sentences whose first two words are
+confirmed by an actual match rather than skipped — the direct signal for the
+rotation-time audio-loss bug §3.1 fixes, since dropped audio at a session
+boundary loses exactly the resumed sentence's opening words);
 `--legacy` runs an inline copy of the pre-2.1 greedy matcher for
 before/after comparisons.
 
@@ -306,15 +322,25 @@ pre-splitting, and each session's final carries real per-word timestamps.
 (v2.0.0 generated one sidecar run per breath group, which made session
 boundaries coincide with sentence boundaries and inflated the cross-sentence
 jump count; those fixtures were regenerated for v2.1.0 and the old ones
-deleted.) 24 fixtures cover three en-US voices, two rates (~160/200 wpm), and
-six misread variants (inserted fillers, a repeated phrase, a skipped word, a
+deleted.) 30 fixtures cover three en-US voices, two rates (~160/200 wpm), six
+misread variants (inserted fillers, a repeated phrase, a skipped word, a
 restarted sentence, a 2-second mid-sentence silence, and a long mid-sentence
-pause that forces a session rotation mid-sentence).
+pause that forces a session rotation mid-sentence), and — new in v2.1.1 — two
+alteration families applied to all three scripts, each aimed at one live-chain
+fix: **quick-resume** (correct speech, but each sentence resumes only ~630 ms
+after the previous ends, just past the endpoint, so the next sentence's
+opening words land right at the rotation — the zero-gap replay's target) and
+**noisy** (correct speech mixed with low-level pink noise at −30 dBFS, raising
+the noise floor above any fixed silence threshold, so sessions rotate only
+because the threshold is adaptive).
 `src/lib/__tests__/tracking-suite.test.js` replays them all in CI (they are
 committed, so no speech dependency there) via the same `replayFixture` the
-CLI uses, and asserts: overshoot 0 and no within-session stall beyond 4.5 s
+CLI uses, and asserts: overshoot 0 and no within-session stall beyond 7 s
 on every fixture; final cursor error ≤ 3; ≤ 1 cross-sentence jump on every
-fixture, and exactly 0 on the natural-rate (160 wpm) clean reads. A handful
+fixture, and exactly 0 on the natural-rate (160 wpm) clean reads; and a
+suite-wide first-word-recall floor of 75 % (§3.1 zero-gap rotation; the
+pre-fix fixtures scored 57 %, the fast-rate reads collapsing to one sentence
+in seven). A handful
 of fast-rate (200 wpm) clean fixtures retain a single benign forward
 catch-up where the recognizer dropped several words at a boundary
 (overshoot and final error stay 0 — the cursor is correct, not teleported).
@@ -322,10 +348,11 @@ The committed `synthetic-teleport.json` fixture reproduces the original
 teleport bug and is asserted exactly in `tracking-fixture.test.js`.
 
 **On the stall target.** The 2-second aspiration holds for normal-density
-scripts; a long jargon-dense sentence at 160 wpm can run to ~4 s because the
-recognizer's partials for a hard phrase lag — a recognition property, not a
-matcher stall (the cursor is not wrong, it is waiting for a recognizable
-word). To regenerate after tuning: `scripts/build-sidecar.sh &&
+scripts; a long jargon-dense sentence at 160 wpm can run to ~6–7 s because the
+recognizer's partials for a hard sub-phrase (percentages, acronyms, product
+names) lag within one otherwise-correct session — a recognition property, not
+a matcher stall (the cursor is not wrong, it is waiting for a recognizable
+word), and display coasting (§3.3) masks it to ~3.6 s on screen. To regenerate after tuning: `scripts/build-sidecar.sh &&
 scripts/make-fixtures.sh`, then `node scripts/track-replay.mjs --all` to
 review, then re-run the suite.
 

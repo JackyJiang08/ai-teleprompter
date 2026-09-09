@@ -1,5 +1,49 @@
 # Changelog
 
+## v2.1.1 — 2026-09-09
+
+Live-microphone reliability. v2.1.0's word-tracking was only ever verified by
+feeding audio files through the sidecar; the real microphone path had a
+rotation-time bug that made the highlight stall on the first word of each new
+sentence. This release fixes the live chain and adds a smoke test so it can't
+regress unseen again.
+
+### The highlight no longer stalls on the first word (live mic)
+
+- **Zero audio loss across session rotation.** When the recognizer finalizes a
+  sentence at a pause, there was a brief window with no active request — and
+  the reader resumes right there, so the *first words of the next sentence*
+  were dropped on the floor, leaving the highlight stuck on word one. Audio is
+  now buffered and replayed into the next session in order, so nothing is lost.
+  The artificial 200 ms delay between sessions is gone. On the regression suite,
+  first-word recall of resumed sentences rises from **57 % to 81 %** — fast-rate
+  reads went from confirming the opening words of 1 sentence in 7 to 5.
+
+### Tracking adapts to your room
+
+- **Adaptive silence threshold.** The pause detector no longer uses a single
+  fixed loudness cutoff (which was fragile at real mic levels and, in a noisy
+  room, never registered silence at all — so sessions never rotated). It now
+  tracks a rolling noise floor and sets the threshold just above it, so it
+  works the same in a quiet room and over fan or café noise. The current floor
+  shows in the `?trackdebug` overlay.
+
+### One microphone, not two
+
+- While word tracking is active the app now opens a **single** microphone
+  capture. The voicing signal that drives display coasting comes from the
+  recognition audio itself (a new `vad` message from the sidecar) instead of a
+  second `getUserMedia` stream that competed with it.
+
+### Testing
+
+- `scripts/live-smoke.mjs` exercises the whole sidecar chain end to end
+  (rotation, real timestamps, voicing edges, first-word recall) and fails
+  loudly on regression. The regression suite gains a **first-word recall**
+  metric and two fixture families — **quick-resume** (tight sentence
+  resumption) and **noisy** (pink noise at −30 dBFS) — across all three
+  scripts, 30 fixtures in all.
+
 ## v2.1.0 — 2026-09-08
 
 Word-tracking refinements and truer regression fixtures.
