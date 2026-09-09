@@ -20,6 +20,7 @@
 // onStatus(status, message) — 'starting' | 'listening' | 'error'
 // onFallback(message) — unrecoverable: caller should switch to the
 //                       frequency-based VAD engine.
+// onVad({ speaking, floor }) — the sidecar's voicing-state edges (coasting)
 // onDebug(msg) — every raw sidecar message (dev tracking-quality overlay)
 
 import { API } from './api'
@@ -41,7 +42,7 @@ export function fallbackMessageFor(code, detail) {
   return FALLBACK_MESSAGES[code] || detail || 'Speech recognition unavailable — using voice-level detection.'
 }
 
-export function createSpeechTracker({ locale, tokens, scriptText, trickyWords, onUpdate, onStatus, onFallback, onDebug }) {
+export function createSpeechTracker({ locale, tokens, scriptText, trickyWords, onUpdate, onStatus, onFallback, onVad, onDebug }) {
   const matcher = createCursorMatcher(tokens)
   // Recognition bias inputs: the script's non-stopword vocabulary
   // (contextualStrings on every request) and the user's tricky-words list
@@ -80,6 +81,11 @@ export function createSpeechTracker({ locale, tokens, scriptText, trickyWords, o
         // Pass the whole message: the matcher uses per-word timestamps for
         // stability gating and falls back to the flat text when absent.
         emitUpdate(matcher.feed(msg.session, msg), msg.confidence)
+        break
+      case 'vad':
+        // Authoritative voicing signal from the sidecar's endpointer, off the
+        // same microphone tap that feeds recognition — no second capture.
+        onVad?.({ speaking: !!msg.speaking, floor: msg.floor })
         break
       case 'error':
         if (msg.fatal) {

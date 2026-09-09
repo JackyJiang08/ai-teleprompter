@@ -71,8 +71,7 @@ export default function ReadView() {
   const silenceTimer = useRef(null)
 
   // ── Coasting (display-only) ──
-  const coastVadRef = useRef(null)          // frequency VAD, coasting signal only
-  const vadSpeakingRef = useRef(false)      // its onSpeaking/onSilence state
+  const vadSpeakingRef = useRef(false)      // voicing state from the sidecar `vad` message
   const rateRef = useRef(createReadingRate())
   const lastMatchAtRef = useRef(null)       // ms when the provisional cursor last advanced
   const coastInputRef = useRef({ commWords: 0, provWords: 0, done: false })
@@ -166,6 +165,12 @@ export default function ReadView() {
         if (status === 'listening') setMicStatus('Listening (on-device)')
         else if (status === 'starting') setMicStatus('Starting…')
       },
+      onVad: ({ speaking, floor }) => {
+        // Single source of "is the reader voicing?" — the sidecar's endpointer,
+        // off the recognition mic tap. Drives coasting; no second capture.
+        vadSpeakingRef.current = speaking
+        if (trackDebug) setDebug(d => ({ ...d, floor, speaking }))
+      },
       onFallback: (message) => {
         // Word tracking unavailable → frequency-based activation, old behavior
         speechTrackerRef.current = null
@@ -180,19 +185,11 @@ export default function ReadView() {
 
     // Coasting needs an independent "is the reader voicing?" signal: the
     // tracker's own `speaking` flag drops ~900 ms after the last partial —
-    // exactly when coasting should kick in. So run the frequency VAD engine
-    // alongside the tracker purely to feed vadSpeakingRef (it does not drive
-    // the scroll here). Off when coasting is disabled.
+    // exactly when coasting should kick in. That signal now comes from the
+    // sidecar's own endpointer (the `vad` message → onVad above), off the same
+    // microphone tap that feeds recognition, so tracking runs ONE mic capture.
     if (configRef.current.coasting !== false) {
       lastMatchAtRef.current = Date.now()
-      const vad = createMicEngine({
-        threshold: configRef.current.threshold,
-        onSpeaking: () => { vadSpeakingRef.current = true },
-        onSilence:  () => { vadSpeakingRef.current = false },
-        onError:    () => {},
-      })
-      coastVadRef.current = vad
-      vad.start(configRef.current.micDeviceId)
     }
   }
 
@@ -201,8 +198,6 @@ export default function ReadView() {
     speechTrackerRef.current = null
     micEngineRef.current?.stop()
     micEngineRef.current = null
-    coastVadRef.current?.stop()
-    coastVadRef.current = null
     vadSpeakingRef.current = false
   }
 
@@ -498,6 +493,10 @@ export default function ReadView() {
             /{useAppStore.getState().recognition.total}
             {' · conf '}{(debug?.confidence ?? 0).toFixed(2)}
             {debug?.at ? ` · ${Date.now() - debug.at}ms ago` : ''}
+          </div>
+          <div>
+            floor {debug?.floor != null ? debug.floor.toFixed(5) : '–'}
+            {' · voicing '}{debug?.speaking ? '🟢' : '⚪'}
           </div>
         </div>
       )}
