@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.1.2 — 2026-09-09
+
+A small follow-up to v2.1.1's live-microphone fix.
+
+### A clear hint when recognition is silent
+
+- If the sidecar VAD reports you're speaking for more than 3 s while no
+  recognition partial arrives and the cursor hasn't moved — the signature of
+  Microphone granted but **Speech Recognition** denied, or the on-device
+  English model missing — the reading status line now shows *"Not hearing
+  words — check Microphone & Speech Recognition permissions"* with a
+  **Settings** button, and clears the instant a partial arrives. The detector
+  is a pure module (`src/lib/stuckDetector.js`) with unit tests.
+
+### The live chain is a release gate
+
+- The end-to-end live-recognition smoke test (`npm run smoke`) now runs on the
+  macOS build runner **before** the DMGs are built, so a broken recognition
+  chain can't ship. On a headless runner without the dictation model or a
+  Speech Recognition grant it skips with a clear log line instead of failing.
+
+### Docs and developer conveniences
+
+- README's Word Tracking section documents silence endpointing and zero-gap
+  session rotation, the 30-fixture suite (now including quick-resume and noisy
+  variants), and the measured first-word recall (57% → 81%) and cross-sentence
+  jumps (6 → 2). New `npm run` scripts — `smoke`, `replay`, `fixtures` —
+  documented in CONTRIBUTING.md.
+
 ## v2.1.1 — 2026-09-09
 
 Live-microphone reliability. v2.1.0's word-tracking was only ever verified by

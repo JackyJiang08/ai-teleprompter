@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "ai-teleprompter"
-version = "2.1.1"
+version = "2.1.2"
 dependencies = [
  "dirs 5.0.1",
  "keyring",
