@@ -18,6 +18,13 @@ npm install
 npm run dev   # requires Rust + Cargo, Node 18+, Xcode Command Line Tools (Swift)
 ```
 
+## Word-tracking scripts (macOS)
+
+- `npm test` — the full unit + fixture-replay suite (runs in CI, no speech dependency).
+- `npm run smoke` — end-to-end live-chain smoke test: builds the sidecar and feeds a clip through it, asserting session rotation, real timestamps, VAD edges, and first-word recall (needs macOS on-device dictation; skips cleanly if unavailable).
+- `npm run replay` — replays the committed tracking fixtures through the matcher and prints the metrics table (cross-sentence jumps, overshoot, final error, first-word recall, display stall).
+- `npm run fixtures` — regenerates the synthesized-voice fixtures from macOS `say` through the real recognizer (~15 min, not run in CI; needs a built sidecar).
+
 ## Submitting a PR
 
 1. Fork the repo

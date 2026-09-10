@@ -1,6 +1,6 @@
 {
   "name": "ai-teleprompter",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Voice-tracking AI teleprompter for macOS",
   "private": true,
   "type": "module",
@@ -14,7 +14,10 @@
     "build:sidecar": "bash scripts/build-sidecar.sh",
     "snap:save": "node scripts/snap.mjs save",
     "snap:check": "node scripts/snap.mjs check",
-    "test": "vitest run"
+    "test": "vitest run",
+    "smoke": "node scripts/live-smoke.mjs",
+    "replay": "node scripts/track-replay.mjs --all",
+    "fixtures": "bash scripts/make-fixtures.sh"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
