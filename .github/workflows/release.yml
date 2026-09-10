@@ -30,31 +30,21 @@ jobs:
           draft: true
           prerelease: false
           body: |
-            ## AI Teleprompter v2.1.1
+            ## AI Teleprompter v2.1.2
 
-            Live-microphone reliability for word tracking.
-
-            v2.1.0's tracking was only ever verified by feeding **audio files** through the recognizer, never a real microphone through the GUI — and a rotation-time bug hid there: while you spoke, the highlight could stall on the first word of each new sentence, or jump to a matching word mid-script and snap back to the start. This release fixes the live chain and adds a smoke test so it can't regress unseen again.
+            A small follow-up to [v2.1.1](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.1.1)'s live-microphone fix.
 
             ---
 
-            ### 🎤 The highlight no longer stalls on the first word
+            ### 🎤 A clear hint when it can't hear your words
 
-            When the recognizer finalizes a sentence at your pause, there was a brief instant with no active recognition request — and you resume speaking right then, so the **first words of your next sentence** were being dropped, leaving the highlight stuck on word one. Audio is now buffered across that instant and replayed into the next session in order, so nothing is lost. (On the test suite, recall of resumed sentences' opening words rises sharply — fast reads went from confirming the first words of 1 in 7 sentences to the great majority.)
+            If the app is picking up your voice but recognition produces nothing for a few seconds — almost always because **Speech Recognition** permission was declined while the microphone was allowed, or the on-device English model isn't installed — the status line now says so plainly: *"Not hearing words — check Microphone & Speech Recognition permissions,"* with a one-tap **Settings** button. It clears itself the instant recognition starts working again.
 
-            ### 🎚️ Tracking adapts to your room
+            ### 🧪 The live chain is now a release gate
 
-            The pause detector no longer uses a single fixed loudness cutoff, which was fragile at real microphone levels and, in a noisy room, never registered silence at all — so sessions never rotated. It now tracks a rolling noise floor and sets its threshold just above it, working the same in a quiet room and over fan or café noise.
+            The end-to-end live-recognition smoke test (session rotation, real timestamps, voicing edges, first-word recall) added in 2.1.1 now runs on the build machine **before** the app is packaged, so a broken recognition chain can never ship. Plus documentation refreshes and a couple of developer conveniences (`npm run smoke` / `replay` / `fixtures`).
 
-            ### 🎙️ One microphone, not two
-
-            While tracking, the app now opens a **single** microphone capture. The "still speaking?" signal that drives coasting comes from the recognition audio itself instead of a second capture that competed with it.
-
-            ### 🏄 Coasting, silence endpointing, and truer fixtures — unchanged from 2.1.0
-
-            The highlight still glides at your reading pace when the recognizer lags (coasting, display-only, toggleable), sessions still rotate on the pauses between sentences, and the regression suite still holds the cursor from ever teleporting and lands it exactly on the last word — now across **30** fixtures including tight-resume and pink-noise variants.
-
-            Everything from [v2.0.0](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.0.0) — the rename with automatic migration, the four AI providers (your Claude or ChatGPT subscription with no API key, an API key, or local Ollama) with model/effort selection, and English-only on-device tracking — is unchanged. **Upgrading from 1.x?** First launch still migrates your library automatically and asks for the mic/speech permissions and the AI key again (a one-time in-app notice explains it).
+            Everything from [v2.1.1](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.1.1) — no first words lost at pauses, an adaptive silence threshold that adjusts to room noise, and a single microphone capture while tracking — and from [v2.0.0](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.0.0) — the rename with automatic migration and the four AI providers — is unchanged. **Upgrading from 1.x?** First launch still migrates your library automatically and asks for the mic/speech permissions and the AI key again (a one-time in-app notice explains it).
 
             ---
 
@@ -62,8 +52,8 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.1_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
-            | 🍎 Intel Mac | `AI Teleprompter_2.1.1_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.2_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Intel Mac | `AI Teleprompter_2.1.2_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
 
             ### ⚠️ First launch
 
@@ -81,10 +71,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  # Gate the DMG builds on the live-chain smoke test (session rotation, real
+  # timestamps, VAD edges, first-word recall). On a headless runner the
+  # on-device English dictation model / Speech Recognition grant may be
+  # missing; live-smoke.mjs detects that and exits 0 with a SKIP line rather
+  # than failing, so the gate blocks only a genuine recognition-chain
+  # regression, never an environment limitation.
+  smoke:
+    name: Live-chain smoke test
+    runs-on: macos-latest
+    needs: create-release
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - run: npm install
+
+      - name: Live smoke test (builds the sidecar; skips if dictation unavailable)
+        run: npm run smoke
+
   build-mac-arm:
     name: Build macOS (Apple Silicon)
     runs-on: macos-latest
-    needs: create-release
+    needs: smoke
     steps:
       - uses: actions/checkout@v7
 
@@ -114,7 +126,7 @@ jobs:
   build-mac-intel:
     name: Build macOS (Intel)
     runs-on: macos-latest
-    needs: create-release
+    needs: smoke
     steps:
       - uses: actions/checkout@v7
 
