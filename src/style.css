@@ -726,6 +726,18 @@ body.mode-classic .idle-quit { opacity: 1; }
   font-size: 9px; font-weight: 600;
   color: var(--text-muted); letter-spacing: 0.04em;
 }
+/* Stuck-tracking hint: voicing detected but recognition silent. Amber reads in
+   both themes. */
+.status-warn {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.02em;
+  color: #f59e0b; display: inline-flex; align-items: center; gap: 6px;
+}
+.status-fix {
+  background: #f59e0b; border: none; color: #1a1a1a;
+  border-radius: 5px; padding: 2px 7px; font-size: 9px; font-weight: 700;
+  cursor: pointer; font-family: inherit; flex-shrink: 0;
+}
+.status-fix:hover { filter: brightness(1.08); }
 .ctrl-btn {
   background: var(--bg-secondary); border: none;
   color: var(--text-secondary); border-radius: 6px;

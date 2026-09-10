@@ -5,6 +5,7 @@ import { API } from '../lib/api'
 import { createMicEngine, SPEEDS, SCROLL_SPEED_BASE } from '../lib/mic'
 import { createSpeechTracker } from '../lib/speech'
 import { coastDisplayWords, createReadingRate } from '../lib/coasting'
+import { createStuckDetector } from '../lib/stuckDetector'
 
 // When word tracking drives the scroll, the current word is eased toward
 // this fraction of the viewport height (the "reading line").
@@ -78,6 +79,15 @@ export default function ReadView() {
   const wordIdxRef = useRef([])             // word-order index → token index
   const displayCursorRef = useRef(-1)       // last rendered display token index
 
+  // ── Stuck-tracking hint ──
+  // Voicing (sidecar VAD) but no recognition for >3 s → likely a Speech
+  // Recognition permission / model problem; surface a hint with a Settings
+  // affordance. Cleared the moment a partial arrives.
+  const stuckDetectorRef = useRef(createStuckDetector())
+  const stuckRef = useRef(false)
+  const [stuck, setStuck] = useState(false)
+  function setStuckBoth(v) { if (stuckRef.current !== v) { stuckRef.current = v; setStuck(v) } }
+
   // Keep refs in sync
   useEffect(() => { isPausedRef.current = isPaused }, [isPaused])
   useEffect(() => { isSpeakingRef.current = isSpeaking }, [isSpeaking])
@@ -140,6 +150,11 @@ export default function ReadView() {
           lastMatchAtRef.current = now
         }
         coastInputRef.current = { commWords: pos.matchedCount, provWords: prov, done: pos.done }
+        // Feed the stuck detector: pos.speaking === true marks a real partial/
+        // final (the speaking-hold timeout passes false), so recognition is
+        // alive; clear the hint. Track committed movement either way.
+        if (pos.speaking) { stuckDetectorRef.current.partial(now); setStuckBoth(false) }
+        stuckDetectorRef.current.commit(pos.matchedCount)
         // Base display cursor from the recognizer; the RAF loop may coast it
         // ahead. Setting it here keeps the highlight responsive on each match.
         setTrackBoth({
@@ -169,11 +184,15 @@ export default function ReadView() {
         // Single source of "is the reader voicing?" — the sidecar's endpointer,
         // off the recognition mic tap. Drives coasting; no second capture.
         vadSpeakingRef.current = speaking
+        stuckDetectorRef.current.vad(speaking, Date.now())
+        if (!speaking) setStuckBoth(false)
         if (trackDebug) setDebug(d => ({ ...d, floor, speaking }))
       },
       onFallback: (message) => {
         // Word tracking unavailable → frequency-based activation, old behavior
         speechTrackerRef.current = null
+        stuckDetectorRef.current.reset()
+        setStuckBoth(false)
         setTrackBoth({ active: false, cursor: -1, committed: -1, done: false })
         setRecognition({ engine: 'vad', status: 'error', message })
         setMicStatus('Voice detection')
@@ -199,6 +218,8 @@ export default function ReadView() {
     micEngineRef.current?.stop()
     micEngineRef.current = null
     vadSpeakingRef.current = false
+    stuckDetectorRef.current.reset()
+    setStuckBoth(false)
   }
 
   // React to live config changes while ReadView is mounted (VAD engine only —
@@ -281,6 +302,8 @@ export default function ReadView() {
       if (vp && st && !paused) {
         const maxScroll = Math.max(0, st.scrollHeight - vp.clientHeight)
         if (t.active) {
+          // Stuck-tracking hint: voicing but no recognition for >3 s.
+          setStuckBoth(stuckDetectorRef.current.poll(Date.now()))
           // Coasting: while the reader is voicing (frequency VAD) but the
           // recognizer has stalled, advance the DISPLAY cursor at the reading
           // rate, capped a few words past committed. Display-only — the
@@ -506,7 +529,14 @@ export default function ReadView() {
           <span className={micRingClass}>
             <span className="mic-core" />
           </span>
-          <span id="status-text">{micStatus}</span>
+          {stuck ? (
+            <span id="status-text" className="status-warn">
+              Not hearing words — check Microphone &amp; Speech Recognition permissions
+              <button className="status-fix" onClick={() => API.openSettings()}>Settings</button>
+            </span>
+          ) : (
+            <span id="status-text">{micStatus}</span>
+          )}
         </div>
         <div className="ctrl-right">
           <button className="ctrl-btn" onClick={() => setFontSize(f => Math.max(11, f - 2))}>A−</button>
