@@ -37,6 +37,9 @@ export const API = {
   getSpeechNotice: () => tauriInvoke('get_speech_notice'),
   onSpeechNotice: (cb) => tauriListen('speech-notice', (e) => cb(e.payload)),
   openSettings: () => tauriInvoke('open_settings'),
+  // Screen-capture protection diagnostic (sharingType per window + config gate)
+  captureDebug: () => tauriInvoke('capture_debug'),
+  onCaptureDebug: (cb) => tauriListen('capture-debug', (e) => cb(e.payload)),
   aiComplete: (system, prompt, model, effort) => tauriInvoke('ai_complete', {
     system, prompt, model: model || null, effort: effort || null,
   }),

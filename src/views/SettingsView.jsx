@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { EFFORT_LABELS, EFFORT_LEVELS, PROVIDER_ORDER, PROVIDERS } from '../lib/ai'
+import { captureExcluded } from '../lib/capture'
 
 const tauriInvoke = window.__TAURI__?.core?.invoke ?? (() => Promise.resolve(null))
 const tauriListen = window.__TAURI__?.event?.listen ?? (() => Promise.resolve(() => {}))
@@ -20,6 +21,8 @@ const API = {
   onSpeechNotice: (cb) => tauriListen('speech-notice', (e) => cb(e.payload)),
   setAiKey:       (key) => tauriInvoke('set_ai_key', { key }),
   hasAiKey:       () => tauriInvoke('has_ai_key'),
+  captureDebug:   () => tauriInvoke('capture_debug'),
+  onCaptureDebug: (cb) => tauriListen('capture-debug', (e) => cb(e.payload)),
 }
 
 const AI_BADGE = {
@@ -61,6 +64,7 @@ export default function SettingsView() {
   const [opacity, setOpacity] = useState(100)
   const [voiceInput, setVoiceInput] = useState(true)
   const [screenshare, setScreenshare] = useState(false)
+  const [captureStatus, setCaptureStatus] = useState(null)  // live sharingType snapshot
   const [theme, setTheme] = useState('dark')
   const [speedIdx, setSpeedIdx] = useState(3)
   const [threshold, setThreshold] = useState(0.018)
@@ -127,6 +131,10 @@ export default function SettingsView() {
     API.onSpeechNotice(v => setSpeechNotice(v || ''))
     API.hasAiKey().then(v => setHasAiKey(!!v))
     refreshAiDetection()
+    // Screen-capture protection status — initial read plus live updates pushed
+    // by the backend after it (re-)applies protection.
+    API.captureDebug().then(v => { if (v) setCaptureStatus(v) })
+    API.onCaptureDebug(v => { if (v) setCaptureStatus(v) })
     API.onSpeechMsg(v => {
       if (!v || !v.type) return
       if (v.type === 'partial' || v.type === 'final') return
@@ -432,6 +440,20 @@ export default function SettingsView() {
           <Row label="Hide on screen share">
             <Toggle checked={screenshare} onChange={handleScreenshare} />
           </Row>
+          {/* Live runtime status from the backend's actual NSWindow.sharingType
+              check (not just the config value) — deliverable 4. */}
+          {(() => {
+            const on = captureExcluded(captureStatus, screenshare)
+            return (
+              <div style={{ padding: '2px 2px 0' }}>
+                <span className={on ? 's-note' : 's-status error'}>
+                  {on
+                    ? 'Excluded from screen capture: on'
+                    : 'Excluded from screen capture: off — visible to Zoom, Meet, recordings'}
+                </span>
+              </div>
+            )
+          })()}
 
           <Divider />
 

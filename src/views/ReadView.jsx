@@ -45,6 +45,8 @@ export default function ReadView() {
   // Dev-only tracking-quality overlay (?trackdebug=1): raw partials vs
   // matched position, for debugging recognition/matcher behavior
   const trackDebug = new URLSearchParams(window.location.search).has('trackdebug')
+  const captureDebug = new URLSearchParams(window.location.search).has('capturedebug')
+  const [captureState, setCaptureState] = useState(null)
   const [debug, setDebug] = useState(null)
   // Dev-only session recorder (?trackrecord=1): captures the script plus the
   // full raw sidecar stream and saves it as a replayable regression fixture
@@ -87,6 +89,17 @@ export default function ReadView() {
   const stuckRef = useRef(false)
   const [stuck, setStuck] = useState(false)
   function setStuckBoth(v) { if (stuckRef.current !== v) { stuckRef.current = v; setStuck(v) } }
+
+  // Dev-only screen-capture diagnostic (?capturedebug=1): polls the backend's
+  // real NSWindow.sharingType for every window + the effective config gate.
+  useEffect(() => {
+    if (!captureDebug) return
+    let alive = true
+    const tick = () => API.captureDebug().then(v => { if (alive && v) setCaptureState(v) }).catch(() => {})
+    tick()
+    const iv = setInterval(tick, 1000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [captureDebug])
 
   // Keep refs in sync
   useEffect(() => { isPausedRef.current = isPaused }, [isPaused])
@@ -521,6 +534,17 @@ export default function ReadView() {
             floor {debug?.floor != null ? debug.floor.toFixed(5) : '–'}
             {' · voicing '}{debug?.speaking ? '🟢' : '⚪'}
           </div>
+        </div>
+      )}
+
+      {captureDebug && (
+        <div id="track-debug" style={{ top: 'auto', bottom: 64 }}>
+          <div>screenshareHidden: {String(captureState?.screenshareHidden)} · captureAllowed: {String(captureState?.captureAllowed)} · effective: {String(captureState?.effective)}</div>
+          {captureState?.windows && Object.entries(captureState.windows).map(([label, w]) => (
+            <div key={label}>
+              {label}: sharingType={w.sharingType} ({w.sharingTypeName}) {w.protected ? '🛡 excluded' : '⚠ CAPTURED'}
+            </div>
+          ))}
         </div>
       )}
 
