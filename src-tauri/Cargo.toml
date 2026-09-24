@@ -1,6 +1,6 @@
 [package]
 name = "ai-teleprompter"
-version = "2.1.2"
+version = "2.1.3"
 description = "AI Teleprompter — voice-tracking teleprompter"
 authors = ["Yuqing (Jacky) Jiang", "Arun Kumar (upstream openTeleprompt)"]
 edition = "2021"

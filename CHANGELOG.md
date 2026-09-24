@@ -1,5 +1,48 @@
 # Changelog
 
+## v2.1.3 — 2026-09-23
+
+Screen-capture protection hardening.
+
+### Every window is excluded from capture, guaranteed
+
+- **Root cause.** Windows were built explicitly *unprotected*
+  (`content_protected(false)`) and flipped on afterward by a separate
+  `set_content_protected` call whose result was discarded — so if that call
+  didn't take effect, the window stayed captured with nothing to re-check it.
+  And the **settings panel was never protected at all**. On macOS,
+  `NSWindow.sharingType = none` (verified to be honored by `screencapture` and
+  every ScreenCaptureKit path Zoom/Meet use — a protected window captures
+  blank) is what excludes a window; the app just wasn't guaranteeing it was
+  always set.
+- **Fix.** Protection is now baked into every window (prompter and settings) at
+  creation, so a window is excluded from its first frame — captured is no
+  longer the fallback state — and re-asserted after every lifecycle event that
+  could reconfigure or reset it (launch, mode switch, notch elevation,
+  notch-metrics refresh, config change, window focus). No window can exist
+  unprotected while **Hide on screen share** is on.
+- The config field now defaults to protected even in a partial/migrated config
+  file (an explicit `false` is still honored).
+
+### Diagnostics and verification
+
+- A runtime diagnostic reports each window's actual `NSWindow.sharingType` and
+  the config gate — as a `?capturedebug=1` overlay, a live **Settings** status
+  line ("Excluded from screen capture: on / off — visible to Zoom, Meet,
+  recordings"), and launch/lifecycle logging.
+- `scripts/capture-check.mjs` (`npm run capture-check`) drives the app through
+  three states (pill collapsed, panel expanded, tracking session), asserts
+  every window is excluded via CoreGraphics, and cross-checks by capturing the
+  display and diffing the window rect against the same state captured
+  unprotected — failing if the app's own pixels appear.
+
+### A note on notch displays
+
+On a notch display the physical notch cutout is always a black rectangle in any
+screen share (macOS draws it, for every app); the app's own pixels — the pill,
+the expanded panel, and the script text — are never captured. On non-notch
+displays the app's windows are fully invisible in a share.
+
 ## v2.1.2 — 2026-09-09
 
 A small follow-up to v2.1.1's live-microphone fix.

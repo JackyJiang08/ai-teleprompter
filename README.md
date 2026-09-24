@@ -54,7 +54,7 @@ This fork is **macOS only** (the speech-tracking sidecar uses Apple's Speech fra
 - 📝 **Distraction-free editor** — script tabs, ✦ Prepare, and Go in a single header row; bold/color and cue markers `[PAUSE]` `[SLOW]` `[BREATHE]` in compact footer menus
 - 📚 **Script library** — switch scripts from the header tabs; edits autosave (⌘S also works)
 - 🎯 **Script-biased recognition** *(macOS 14+)* — word tracking builds an on-device language model from your script, measurably improving recognition of names and technical terms (see [Word Tracking](#word-tracking-this-fork))
-- 🔇 **Invisible during screen share** — Zoom, Meet, Loom can't see it. Only you can
+- 🔇 **Invisible during screen share** — the app's windows are excluded from screen capture (Zoom, Meet, Loom, recordings). See [Screen sharing](#screen-sharing).
 - 🌗 **Light & dark theme** — pastel light default, toggleable
 - ⚡ **Live controls** — speed + font size adjustable while reading
 - 🌫️ **Opacity control** — barely-there to solid
@@ -76,6 +76,17 @@ Instead of scrolling at a fixed speed whenever it hears sound, the prompter reco
 - **Graceful fallback** — if Speech permission is denied or the on-device English model isn't installed (System Settings › Keyboard › Dictation), the app falls back to the original frequency-based voice activation and says so in Settings. You can also turn Word Tracking off entirely.
 
 Under the hood: a small Swift sidecar streams on-device per-word transcripts to the app, and the sequence-coherent matcher aligns them against the tokenized script. Details in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §3.1 and §3.3.
+
+---
+
+## Screen sharing
+
+With **Hide on screen share** on (the default), every window the app owns — the notch pill, the expanded reading panel with your script text, and the settings panel — is excluded from screen capture. Its `NSWindow.sharingType` is set to `none`, so any capturer (Zoom, Google Meet, Loom, QuickTime, macOS screenshots) renders **whatever is behind the window** in that region, never the app's own pixels. So what your audience sees is precisely:
+
+- **On a non-notch display** (external monitor, or an older Mac) the collapsed pill and the expanded panel are fully invisible — the region shows your desktop or the window behind it.
+- **On a notch display** the physical notch cutout is *always* a black rectangle in any screen share — that's macOS drawing the notch, not this app, and it happens for every app. The app's own pixels — the pill UI, the expanded panel, and the **script text** — are never captured; only the system's black notch bar is.
+
+You can turn this off in **Settings → Hide on screen share** (e.g. to demo the app itself); a live status line there reports whether every window is currently excluded. Protection is baked into each window at creation and re-asserted on every window change, so no window is ever briefly capturable while the toggle is on. Implementation and the runtime verification tooling: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.3.
 
 ---
 
