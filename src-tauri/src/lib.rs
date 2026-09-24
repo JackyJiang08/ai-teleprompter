@@ -142,6 +142,9 @@ use tauri_plugin_positioner::{Position, WindowExt};
 pub struct Config {
     pub scroll_speed: f64,
     pub threshold: f64,
+    // Default TRUE: a config that omits this field (a partial write, or one
+    // migrated from an older layout) must come back protected, never captured.
+    #[serde(default = "default_screenshare_hidden")]
     pub screenshare_hidden: bool,
     pub mode: String,
     pub opacity: f64,
@@ -167,6 +170,7 @@ pub struct Config {
     pub ai_prefs: serde_json::Value,
 }
 
+fn default_screenshare_hidden() -> bool { true }
 fn default_word_tracking() -> bool { true }
 fn default_coasting() -> bool { true }
 fn default_ai_local_url() -> String { "http://localhost:11434".to_string() }
@@ -493,9 +497,83 @@ fn capture_allowed() -> bool {
     std::env::var("TELEPROMPTER_ALLOW_CAPTURE").map(|v| v == "1").unwrap_or(false)
 }
 
-fn apply_screenshare_mode(window: &WebviewWindow, hidden: bool) {
-    let _ = window.set_content_protected(hidden && !capture_allowed());
+// ── Screen-capture protection ──────────────────────────────
+// A window is excluded from screen capture (screencapture, QuickTime, and the
+// ScreenCaptureKit display capture Zoom/Meet/recorders use) when its
+// NSWindow.sharingType is NSWindowSharingNone — `set_content_protected(true)`
+// sets that, and the capturing compositor then renders whatever is BEHIND the
+// window instead of its pixels. The invariant: while `screenshareHidden` is on,
+// EVERY app window carries it — the prompter (which shows the script) and the
+// settings panel alike — from the moment it is created (baked into the builder,
+// not flipped on after) and re-asserted after any code path that could
+// reconfigure it. The old code applied it post-build and only to the prompter,
+// so the settings window was permanently captured and any new/edge window path
+// could leak. See docs/ARCHITECTURE.md §2.3.
+
+// Read the live NSWindow.sharingType (0 = none/excluded, 1 = readOnly, 2 =
+// readWrite; the last two are captured). -1 = could not read. Verify at
+// runtime, never assume the flag stuck.
+#[cfg(target_os = "macos")]
+fn ns_sharing_type(window: &WebviewWindow) -> i64 {
+    match window.ns_window() {
+        Ok(p) => unsafe { (*(p as *mut objc2_app_kit::NSWindow)).sharingType().0 as i64 },
+        Err(_) => -1,
+    }
 }
+#[cfg(not(target_os = "macos"))]
+fn ns_sharing_type(_window: &WebviewWindow) -> i64 { -1 }
+
+fn screenshare_hidden(app: &AppHandle) -> bool {
+    app.try_state::<AppState>()
+        .map(|s| s.config.lock().unwrap().screenshare_hidden)
+        .unwrap_or(true)
+}
+
+fn apply_screenshare_mode(window: &WebviewWindow, hidden: bool) {
+    let want = hidden && !capture_allowed();
+    let _ = window.set_content_protected(want);
+    let st = ns_sharing_type(window);
+    eprintln!("[capture] window={} set_content_protected({}) → sharingType={} ({})",
+        window.label(), want, st, if st == 0 { "excluded" } else { "CAPTURED" });
+}
+
+// Re-assert protection on every window that currently exists. Called after any
+// lifecycle event (launch, creation, elevate, mode switch, notch-metrics
+// refresh, config change) so no window can linger unprotected while the toggle
+// is on. Idempotent.
+fn reassert_screenshare(app: &AppHandle, context: &str) {
+    let hidden = screenshare_hidden(app);
+    for (_label, w) in app.webview_windows() {
+        apply_screenshare_mode(&w, hidden);
+    }
+    eprintln!("[capture] reassert after {context}: {}", capture_debug_json(app));
+}
+
+// JSON snapshot of the effective protection state for every window plus the
+// config gate — powers the ?capturedebug overlay, the Settings status line, and
+// the launch/lifecycle logging (deliverable 1).
+fn capture_debug_json(app: &AppHandle) -> serde_json::Value {
+    let hidden = screenshare_hidden(app);
+    let allowed = capture_allowed();
+    let mut windows = serde_json::Map::new();
+    for (label, w) in app.webview_windows() {
+        let st = ns_sharing_type(&w);
+        windows.insert(label.clone(), serde_json::json!({
+            "sharingType": st,
+            "sharingTypeName": match st { 0 => "none", 1 => "readOnly", 2 => "readWrite", _ => "unknown" },
+            "protected": st == 0,
+        }));
+    }
+    serde_json::json!({
+        "screenshareHidden": hidden,
+        "captureAllowed": allowed,
+        "effective": hidden && !allowed,
+        "windows": windows,
+    })
+}
+
+#[tauri::command]
+fn capture_debug(app: AppHandle) -> serde_json::Value { capture_debug_json(&app) }
 
 // ── Commands ───────────────────────────────────────────────
 
@@ -511,6 +589,9 @@ fn elevate_notch_window(window: WebviewWindow) -> String {
         // elevate_to_notch_level now handles both level=27 AND repositioning to screen top
         elevate_to_notch_level(&window);
     }
+    // Re-assert capture protection: changing level/frame is exactly the kind of
+    // reconfiguration after which we must guarantee sharingType is still none.
+    reassert_screenshare(&window.app_handle(), "elevate_notch_window");
     format!("ok:mode={cfg}")
 }
 
@@ -520,7 +601,10 @@ fn get_config(state: State<AppState>) -> Config {
 }
 
 #[tauri::command]
-fn get_notch_metrics() -> serde_json::Value {
+fn get_notch_metrics(app: AppHandle) -> serde_json::Value {
+    // A notch-metrics refresh can precede a reposition; re-assert protection so
+    // the window can't emerge from any resulting reconfiguration unprotected.
+    reassert_screenshare(&app, "get_notch_metrics");
     notch_metrics().unwrap_or_else(|| serde_json::json!({ "hasNotch": false }))
 }
 
@@ -547,9 +631,11 @@ fn set_config(app: AppHandle, state: State<AppState>, patch: serde_json::Value) 
     save_config(&cfg_clone);
     drop(cfg);
 
-    if let Some(w) = get_prompter(&app) {
-        apply_screenshare_mode(&w, cfg_clone.screenshare_hidden);
-    }
+    // Re-assert protection on EVERY window (prompter, settings, any future
+    // window) — not just the prompter — so toggling the config can never leave
+    // one captured, and emit the live capture state for the Settings status line.
+    reassert_screenshare(&app, "set_config");
+    let _ = app.emit("capture-debug", capture_debug_json(&app));
     let _ = app.emit("config-update", &cfg_clone);
 }
 
@@ -1689,7 +1775,7 @@ fn create_prompter_window(app: &AppHandle) {
     .inner_size(width, height)
     .position(x, y)
     .visible_on_all_workspaces(true)
-    .content_protected(false)
+    .content_protected(cfg.screenshare_hidden && !capture_allowed())
     .build();
 
     let window = match window {
@@ -1708,8 +1794,10 @@ fn create_prompter_window(app: &AppHandle) {
         eprintln!("[OT] calling elevate_to_notch_level");
         elevate_to_notch_level(&window);
     }
-
-
+    // Re-assert after the (recreated) window is fully configured — mode switch
+    // is a full teardown/rebuild, the classic place a window could come back up
+    // captured.
+    reassert_screenshare(app, "create_prompter_window");
 }
 
 fn position_settings_window(app: &AppHandle, w: &WebviewWindow) {
@@ -1739,7 +1827,11 @@ fn show_settings(app: &AppHandle) {
     #[cfg(not(target_os = "windows"))]
     let (settings_url, win_w, win_h) = ("settings.html", 280.0_f64, 420.0_f64);
 
+    // The settings panel is a real app window and must be excluded from capture
+    // too — it was the one window the old code never protected.
+    let want_protected = screenshare_hidden(app) && !capture_allowed();
     if let Some(w) = get_settings(app) {
+        apply_screenshare_mode(&w, screenshare_hidden(app));
         position_settings_window(app, &w);
         let _ = w.show();
         let _ = w.set_focus();
@@ -1755,9 +1847,11 @@ fn show_settings(app: &AppHandle) {
         .skip_taskbar(true)
         .resizable(false)
         .inner_size(win_w, win_h)
+        .content_protected(want_protected)
         .build()
         .ok();
         if let Some(w) = get_settings(app) {
+            apply_screenshare_mode(&w, screenshare_hidden(app));
             position_settings_window(app, &w);
             w.set_always_on_top(true).ok();
             w.set_focus().ok();
@@ -1809,6 +1903,7 @@ pub fn run() {
             set_movable, move_window, get_window_pos,
             open_url, open_settings,
             focus_prompter, elevate_notch_window,
+            capture_debug,
             start_speech, stop_speech, get_speech_status,
             set_speech_notice, get_speech_notice, save_tracking_fixture,
             ai_complete, ai_test, set_ai_key, has_ai_key,
@@ -1853,7 +1948,7 @@ pub fn run() {
             .inner_size(width, height)
             .position(x, y)
             .visible_on_all_workspaces(true)
-            .content_protected(false)
+            .content_protected(cfg.screenshare_hidden && !capture_allowed())
             .build()?;
 
             eprintln!("[OT] setup: prompter window built, is_notch={is_notch}");
@@ -1864,6 +1959,8 @@ pub fn run() {
             }
 
             apply_screenshare_mode(&prompter, cfg.screenshare_hidden);
+            // Log the launch capture state for every window (deliverable 1).
+            reassert_screenshare(&app_handle, "launch");
 
             // Dev-only demo hooks: TELEPROMPTER_DEMO_PARAMS="view=read&trackdemo=1"
             // navigates the prompter to the same URL test hooks the visual
@@ -1987,6 +2084,17 @@ pub fn run() {
                     api.prevent_close();
                 }
                 // Note: do NOT prevent prompter close — switch_mode needs to close and recreate it
+            }
+            // Central guarantee: whenever a window is focused or shown, re-assert
+            // capture protection on it. This closes any gap where macOS or a
+            // reconfiguration reset sharingType out from under us — the flag is
+            // re-checked and restored on every such event, so a window cannot be
+            // interacted with while unprotected.
+            if matches!(event, tauri::WindowEvent::Focused(true)) {
+                let app = window.app_handle();
+                if let Some(w) = app.get_webview_window(window.label()) {
+                    apply_screenshare_mode(&w, screenshare_hidden(app));
+                }
             }
         })
         .build(tauri::generate_context!())
@@ -2406,5 +2514,43 @@ mod cli_tests {
         std::env::remove_var("FAKE_SLEEP");
         let _ = fs::remove_dir_all(&workdir);
         assert!(err.starts_with("canceled:"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod screenshare_tests {
+    use super::*;
+
+    // Deliverable 6: the config default. Screen-capture protection is ON by
+    // default so a fresh install is never captured.
+    #[test]
+    fn protection_is_on_by_default() {
+        assert!(Config::default().screenshare_hidden, "screenshare_hidden must default to true");
+        assert!(default_screenshare_hidden());
+    }
+
+    // A config that OMITS screenshareHidden (a partial write, or one migrated
+    // from an older layout) must deserialize to protected, not captured — the
+    // serde default guarantees it rather than leaving the field to bool::default
+    // (false) or failing the whole parse.
+    #[test]
+    fn missing_field_deserializes_protected() {
+        let json = r#"{
+            "scrollSpeed": 1.0, "threshold": 0.018, "mode": "notch",
+            "opacity": 1.0, "autoScroll": false, "micDeviceId": "", "theme": "dark"
+        }"#;
+        let cfg: Config = serde_json::from_str(json).expect("config without screenshareHidden should still parse");
+        assert!(cfg.screenshare_hidden, "omitted screenshareHidden must default to protected (true)");
+    }
+
+    // An explicit false is still honored (the user can turn it off).
+    #[test]
+    fn explicit_false_is_honored() {
+        let json = r#"{
+            "scrollSpeed": 1.0, "threshold": 0.018, "screenshareHidden": false, "mode": "notch",
+            "opacity": 1.0, "autoScroll": false, "micDeviceId": "", "theme": "dark"
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        assert!(!cfg.screenshare_hidden);
     }
 }
