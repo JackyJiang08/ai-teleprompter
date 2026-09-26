@@ -570,6 +570,7 @@ export default function ReadView() {
           <button className="ctrl-btn" onClick={() => setSpeedIdx(i => { const n = Math.min(SPEEDS.length - 1, i + 1); API.setConfig({ scrollSpeed: SPEEDS[n] }); return n })}>+</button>
           <button className="ctrl-btn" onClick={togglePause}>{isPaused ? '▶' : '⏸'}</button>
           <button className="ctrl-btn" onClick={handleReset}>↺</button>
+          <button className="ctrl-btn" title="Go dark for screen share (⌘⇧H)" onClick={() => API.setSharingMode(true)}>🚫</button>
           <button className="ctrl-btn" onClick={handleDone}>✕</button>
         </div>
       </div>

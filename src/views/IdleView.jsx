@@ -10,6 +10,11 @@ export default function IdleView({ isHovered }) {
     API.quit()
   }
 
+  function handleGoDark(e) {
+    e.stopPropagation() // don't also open the editor
+    API.setSharingMode(true) // hide every window + pause tracking; tray/⌘⇧H resumes
+  }
+
   function handleOpen() {
     setView('edit')
   }
@@ -71,6 +76,24 @@ export default function IdleView({ isHovered }) {
             strokeLinejoin="round"
           />
         </svg>
+
+        {/* Go dark (sharing mode) — hover reveal in notch mode; always visible
+            in classic. Hides every window + pauses tracking for a screen share;
+            the tray icon or ⌘⇧H brings it back. */}
+        {(isHovered || isClassic) && (
+          <button
+            className="idle-godark"
+            onClick={handleGoDark}
+            title="Go dark for screen share (⌘⇧H)"
+            aria-label="Go dark for screen share"
+          >
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path d="M2 6s1.6-3 4-3 4 3 4 3-1.6 3-4 3-4-3-4-3z" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+              <circle cx="6" cy="6" r="1.2" fill="currentColor" />
+              <path d="M2 2l8 8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            </svg>
+          </button>
+        )}
 
         {/* Quit — hover reveal in notch mode; always visible in classic
             (same pattern as the chevron). See issue #1. */}

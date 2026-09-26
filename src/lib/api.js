@@ -40,6 +40,11 @@ export const API = {
   // Screen-capture protection diagnostic (sharingType per window + config gate)
   captureDebug: () => tauriInvoke('capture_debug'),
   onCaptureDebug: (cb) => tauriListen('capture-debug', (e) => cb(e.payload)),
+  // Sharing mode: hide every window + pause tracking to go dark for a screen share
+  setSharingMode: (on) => tauriInvoke('set_sharing_mode', { on }),
+  toggleSharingMode: () => tauriInvoke('toggle_sharing_mode'),
+  getSharingMode: () => tauriInvoke('get_sharing_mode'),
+  onSharingMode: (cb) => tauriListen('sharing-mode', (e) => cb(e.payload)),
   aiComplete: (system, prompt, model, effort) => tauriInvoke('ai_complete', {
     system, prompt, model: model || null, effort: effort || null,
   }),

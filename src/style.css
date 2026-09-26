@@ -324,7 +324,7 @@ body.mode-classic .idle-chevron {
 }
 
 /* Quit — hover reveal next to the chevron (issue #1) */
-.idle-quit {
+.idle-quit, .idle-godark {
   display: flex; align-items: center; justify-content: center;
   width: 16px; height: 16px; padding: 0;
   margin-left: 2px; flex-shrink: 0;
@@ -334,8 +334,11 @@ body.mode-classic .idle-chevron {
   transition: opacity 0.2s ease, color 0.15s ease;
 }
 .idle-pill-content.hovered .idle-quit,
-body.mode-classic .idle-quit { opacity: 1; }
+.idle-pill-content.hovered .idle-godark,
+body.mode-classic .idle-quit,
+body.mode-classic .idle-godark { opacity: 1; }
 .idle-quit:hover { color: #ef4444; }
+.idle-godark:hover { color: var(--accent); }
 
 /* Quit in the editor header */
 .pill-btn.edit-quit { margin-left: 2px; }
