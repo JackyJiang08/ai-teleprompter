@@ -30,23 +30,25 @@ jobs:
           draft: true
           prerelease: false
           body: |
-            ## AI Teleprompter v2.1.3
+            ## AI Teleprompter v2.1.4
 
-            Screen-capture protection hardening.
+            Honest screen-sharing behavior — and a reliable way to go dark.
 
             ---
 
-            ### 🛡️ Your script stays private on a screen share
+            ### ⚠️ Correction: the app is not auto-hidden from Zoom on macOS 15.4+
 
-            **Hide on screen share** (on by default) excludes every window the app owns — the notch pill, the expanded reading panel with your script, and the settings panel — from screen capture in Zoom, Meet, Loom, and recordings. This release makes that guarantee airtight: protection is now baked into each window the moment it's created (so a window is never briefly capturable) and re-asserted after every window change, and the settings panel — previously never protected — is covered too. What your audience sees in the app's region is simply whatever is behind it.
+            Earlier releases said the prompter was invisible to Zoom, Meet, Loom, and recordings. That is **no longer true**. As of **macOS 15.4**, Apple changed the system so a window's content-protection flag (`sharingType = none`) no longer excludes it from ScreenCaptureKit capture, and Apple states there is **no public API to prevent screen capture** ([Apple Developer Forums](https://developer.apple.com/forums/thread/787527), [Tauri #14200](https://github.com/tauri-apps/tauri/issues/14200)). Zoom captures the raw display by default, so a **whole-screen share shows the panel and your script text**. The flag still hides the app from **local screenshots and legacy capture**, so it's kept — but it is not a guarantee, and all "invisible to Zoom" wording has been removed.
 
-            On a notch display the physical notch cutout is always a black bar in any screen share — that's macOS drawing the notch for every app, not this one; your script text is never in it.
+            ### 🕶️ New: Sharing mode — go dark instantly with ⌘⇧H
 
-            ### 🔎 See it for yourself
+            Press **⌘⇧H** (or the pill's "go dark" control) to **hide every window and pause tracking** the moment a screen share starts. A dot appears in the menu-bar icon while you're hidden; press ⌘⇧H again — or click the menu-bar icon — to bring the prompter back.
 
-            **Settings → Hide on screen share** now shows a live status line — *"Excluded from screen capture: on"* — driven by a real runtime check of each window, not just the setting. (A scripted `capture-check` verifies it across the collapsed, expanded, and tracking states.)
+            **Sharing safely** (now in the README): share a *window* instead of the whole desktop; share the *other* display and keep the prompter on your built-in screen; or, in Zoom, enable "Advanced capture with window filtering" and share a specific window. Camera-only recordings (video calls, interview recorders, self-recorded video) never see the app.
 
-            Everything from [v2.1.2](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.1.2) and earlier — the live-microphone fixes, coasting, the four AI providers, and automatic migration — is unchanged. **Upgrading from 1.x?** First launch still migrates your library automatically and asks for the mic/speech permissions and the AI key again (a one-time in-app notice explains it).
+            On a notch display the physical notch cutout is always a black bar in any screen share — that's macOS drawing the notch for every app.
+
+            Everything else from [v2.1.3](https://github.com/JackyJiang08/ai-teleprompter/releases/tag/v2.1.3) and earlier — the live-microphone fixes, coasting, the four AI providers, and automatic migration — is unchanged. **Upgrading from 1.x?** First launch still migrates your library automatically and asks for the mic/speech permissions and the AI key again (a one-time in-app notice explains it).
 
             ---
 
@@ -54,8 +56,8 @@ jobs:
 
             | Platform | File | Notes |
             |---|---|---|
-            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.3_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
-            | 🍎 Intel Mac | `AI Teleprompter_2.1.3_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Apple Silicon (M1–M4) | `AI Teleprompter_2.1.4_aarch64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
+            | 🍎 Intel Mac | `AI Teleprompter_2.1.4_x64.dmg` | macOS 13+ (script-biased recognition needs macOS 14+) |
 
             ### ⚠️ First launch
 

@@ -1,5 +1,41 @@
 # Changelog
 
+## v2.1.4 — 2026-09-26
+
+Honest screen-sharing behavior, plus a reliable way to go dark.
+
+### Correction: the app is not automatically hidden from Zoom on macOS 15.4+
+
+Earlier versions claimed the prompter was invisible to Zoom/Meet/Loom and
+recordings. That is **no longer true**: as of macOS 15.4 Apple changed the
+system so `NSWindow.sharingType = none` no longer excludes a window from
+ScreenCaptureKit capture, and Apple states there is no public API to prevent
+screen capture ([Apple Developer Forums](https://developer.apple.com/forums/thread/787527),
+[Tauri #14200](https://github.com/tauri-apps/tauri/issues/14200)). Zoom
+captures the raw display by default, so a whole-screen share shows the panel and
+script text. The flag still hides the app from **legacy CoreGraphics capture and
+macOS screenshots**, and from window-filtering capture modes — so it's kept, but
+no longer described as a guarantee. All "invisible to Zoom" copy has been removed
+from the README, the release notes, and the app; the Settings toggle and status
+line now read **"Hidden from legacy capture & screenshots"** with a one-line
+caveat, and the README has a "Sharing safely" guide.
+
+### New: Sharing mode — go dark instantly (⌘⇧H)
+
+- One global shortcut, **⌘⇧H** (Ctrl⇧H), hides **every** app window (pill and
+  panel) and pauses tracking, so you can go dark the moment a screen share
+  starts — and the same shortcut brings it back.
+- A **"go dark"** control on the pill does the same; while hidden, the menu-bar
+  tray icon shows a `●` indicator and **clicking it resumes**.
+- Resume works even though every window is hidden (the shortcut is handled in the
+  backend, and the tray icon stays live).
+
+### Docs & tooling
+
+- ARCHITECTURE §2.3 rewritten for the macOS 15.4+ reality and Sharing mode.
+- `capture-check` is relabeled as testing the **legacy path only** and notes it
+  cannot verify ScreenCaptureKit behavior.
+
 ## v2.1.3 — 2026-09-23
 
 Screen-capture protection hardening.
