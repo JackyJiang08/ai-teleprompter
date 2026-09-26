@@ -54,7 +54,7 @@ This fork is **macOS only** (the speech-tracking sidecar uses Apple's Speech fra
 - 📝 **Distraction-free editor** — script tabs, ✦ Prepare, and Go in a single header row; bold/color and cue markers `[PAUSE]` `[SLOW]` `[BREATHE]` in compact footer menus
 - 📚 **Script library** — switch scripts from the header tabs; edits autosave (⌘S also works)
 - 🎯 **Script-biased recognition** *(macOS 14+)* — word tracking builds an on-device language model from your script, measurably improving recognition of names and technical terms (see [Word Tracking](#word-tracking-this-fork))
-- 🔇 **Invisible during screen share** — the app's windows are excluded from screen capture (Zoom, Meet, Loom, recordings). See [Screen sharing](#screen-sharing).
+- 🔇 **Sharing mode** — one shortcut (⌘⇧H) hides every window and pauses tracking so you can go dark the instant a screen share starts. See [Screen sharing](#screen-sharing).
 - 🌗 **Light & dark theme** — pastel light default, toggleable
 - ⚡ **Live controls** — speed + font size adjustable while reading
 - 🌫️ **Opacity control** — barely-there to solid
@@ -81,12 +81,25 @@ Under the hood: a small Swift sidecar streams on-device per-word transcripts to 
 
 ## Screen sharing
 
-With **Hide on screen share** on (the default), every window the app owns — the notch pill, the expanded reading panel with your script text, and the settings panel — is excluded from screen capture. Its `NSWindow.sharingType` is set to `none`, so any capturer (Zoom, Google Meet, Loom, QuickTime, macOS screenshots) renders **whatever is behind the window** in that region, never the app's own pixels. So what your audience sees is precisely:
+**Important: on macOS 15.4+ the app is *not* automatically hidden from a screen share.** Please read this before relying on it.
 
-- **On a non-notch display** (external monitor, or an older Mac) the collapsed pill and the expanded panel are fully invisible — the region shows your desktop or the window behind it.
-- **On a notch display** the physical notch cutout is *always* a black rectangle in any screen share — that's macOS drawing the notch, not this app, and it happens for every app. The app's own pixels — the pill UI, the expanded panel, and the **script text** — are never captured; only the system's black notch bar is.
+**What the "Hidden from legacy capture & screenshots" toggle does.** It sets the app's windows to `NSWindow.sharingType = none`. That excludes them from **legacy CoreGraphics capture** and from **macOS screenshots** (⌘⇧3/4) — which is why a local screenshot won't show the prompter — and it *may* be honored by capture modes that filter by window. It is a best-effort measure, not a guarantee.
 
-You can turn this off in **Settings → Hide on screen share** (e.g. to demo the app itself); a live status line there reports whether every window is currently excluded. Protection is baked into each window at creation and re-asserted on every window change, so no window is ever briefly capturable while the toggle is on. Implementation and the runtime verification tooling: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.3.
+**What it does NOT do.** As of **macOS 15.4**, Apple changed the system so `sharingType = none` **no longer excludes a window from ScreenCaptureKit capture**, and Apple states there is **no public API to prevent screen capture** ([Apple Developer Forums](https://developer.apple.com/forums/thread/787527), [Tauri #14200](https://github.com/tauri-apps/tauri/issues/14200)). Zoom on macOS captures the raw display output by default, so a **Zoom whole-screen share shows the prompter and your script text**. Meet, Loom, OBS and other ScreenCaptureKit-based tools capturing the whole screen can see it too.
+
+### Sharing safely
+
+To keep your script off a shared screen, do any of these:
+
+- **Press ⌘⇧H (Sharing mode)** — instantly hides every app window and pauses tracking, so you can go dark the moment a share starts. A dot appears in the menu-bar icon while it's on; press ⌘⇧H again, or click the menu-bar icon, to bring it back. You can also click the "go dark" control on the pill.
+- **Share a window, not the whole desktop** — share only your slides/browser; the prompter is a different window and won't be included.
+- **Share the *other* display** — keep the prompter on your built-in screen (by the camera) and share the external monitor.
+- **For Zoom specifically** — enable Zoom's **Advanced capture with window filtering** (Settings → Screen Sharing) and share a **specific window**; Zoom then honors `sharingType` and omits the prompter.
+- **Camera-only recordings are never affected** — video calls, HireVue-style interview recorders, and self-recorded webcam videos capture the camera, not the screen, so they never see the app.
+
+**Notch cutout.** On a notch display the physical notch is always a black rectangle in any screen share — that's macOS drawing the notch for every app, not this one.
+
+Implementation notes and the legacy-path verification tooling: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) §2.3.
 
 ---
 

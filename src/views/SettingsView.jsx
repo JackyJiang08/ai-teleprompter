@@ -436,20 +436,23 @@ export default function SettingsView() {
 
           <Divider />
 
-          {/* Hide on screen share */}
-          <Row label="Hide on screen share">
+          {/* Hidden from legacy capture & screenshots. NOT a guarantee against
+              ScreenCaptureKit capture (Zoom whole-screen) on macOS 15.4+ —
+              use Sharing mode (⌘⇧H) to truly go dark. */}
+          <Row label="Hidden from legacy capture & screenshots">
             <Toggle checked={screenshare} onChange={handleScreenshare} />
           </Row>
-          {/* Live runtime status from the backend's actual NSWindow.sharingType
-              check (not just the config value) — deliverable 4. */}
           {(() => {
             const on = captureExcluded(captureStatus, screenshare)
             return (
               <div style={{ padding: '2px 2px 0' }}>
                 <span className={on ? 's-note' : 's-status error'}>
                   {on
-                    ? 'Excluded from screen capture: on'
-                    : 'Excluded from screen capture: off — visible to Zoom, Meet, recordings'}
+                    ? 'Hidden from legacy capture & screenshots: on'
+                    : 'Hidden from legacy capture & screenshots: off'}
+                </span>
+                <span className="s-note" style={{ display: 'block' }}>
+                  macOS 15.4+ screen capture (e.g. Zoom whole-screen) can still see the app — press ⌘⇧H (Sharing mode) to hide every window.
                 </span>
               </div>
             )

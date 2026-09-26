@@ -3,9 +3,11 @@
 //
 // Interprets a `capture_debug` snapshot from the backend (each window's live
 // NSWindow.sharingType plus the config gate) into a single "are the app's
-// windows excluded from screen capture right now?" boolean for the UI. True
-// only when protection is effective (config on, not overridden by the dev
-// escape hatch) AND every window actually reports sharingType none.
+// windows hidden from LEGACY capture & screenshots right now?" boolean for the
+// UI. (sharingType=none blocks CoreGraphics capture and screenshots, but NOT
+// ScreenCaptureKit on macOS 15.4+ — see ARCHITECTURE §2.3.) True only when
+// protection is effective (config on, not overridden by the dev escape hatch)
+// AND every window actually reports sharingType none.
 
 export function captureExcluded(status, fallback = false) {
   if (!status || typeof status !== 'object') return fallback

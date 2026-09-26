@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: MIT
 // Part of AI Teleprompter, a fork of openTeleprompt (MIT).
 /**
- * capture-check.mjs — verifies the app's windows are genuinely excluded from
- * screen capture, empirically, across three states: pill collapsed, panel
- * expanded, and during a tracking session. For each state it:
+ * capture-check.mjs — verifies content protection on the LEGACY capture path
+ * only: CoreGraphics window capture and macOS screenshots (`screencapture`),
+ * which still honor NSWindow.sharingType = none.
+ *
+ * IMPORTANT: this does NOT — and cannot — verify ScreenCaptureKit behavior.
+ * As of macOS 15.4 `sharingType = none` no longer excludes a window from
+ * ScreenCaptureKit capture (Zoom's default whole-screen share), and macOS
+ * exposes no API to prevent it. A pass here means "hidden from screenshots and
+ * legacy capture", not "invisible to Zoom whole-screen". To truly go dark, use
+ * Sharing mode (⌘⇧H), which hides the windows outright. See ARCHITECTURE §2.3.
+ *
+ * Across three states — pill collapsed, panel expanded, tracking session — for
+ * each state it:
  *
  *   1. Reads every teleprompter window's live NSWindow.sharingType via
  *      CoreGraphics (kCGWindowSharingState) — the exact bit ScreenCaptureKit
@@ -152,4 +162,5 @@ if (failures.length) {
   for (const f of failures) console.error(`   - ${f}`)
   process.exit(1)
 }
-console.log(`\n✅ capture-check PASSED — every window excluded from capture in all three states.`)
+console.log(`\n✅ capture-check PASSED — every window excluded from LEGACY capture & screenshots in all three states.`)
+console.log(`   NOTE: this does not verify ScreenCaptureKit (Zoom whole-screen); no macOS API can. Use Sharing mode (⌘⇧H) to truly go dark.`)
