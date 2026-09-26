@@ -129,6 +129,10 @@ use std::sync::{Mutex, atomic::{AtomicBool, Ordering}};
 
 // Set to true once the tray icon has been clicked — positioner needs this before TrayCenter works
 static TRAY_CLICKED: AtomicBool = AtomicBool::new(false);
+// "Sharing mode": every app window hidden and tracking paused, for going dark
+// the instant a screen share starts (content protection is NOT a guarantee on
+// macOS 15.4+, so hiding is the only sure way — see docs/ARCHITECTURE.md §2.3).
+static SHARING_MODE: AtomicBool = AtomicBool::new(false);
 use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, PhysicalPosition, State, WebviewWindow,
@@ -779,6 +783,76 @@ fn resize_settings(app: AppHandle, dims: serde_json::Value) -> Result<(), String
 
 #[tauri::command]
 fn quit_app(app: AppHandle) { app.exit(0); }
+
+// ── Sharing mode ───────────────────────────────────────────
+// The honest way to keep the prompter out of a screen share: hide every window
+// and pause tracking. Toggled by a global shortcut (⌘⇧H / Ctrl⇧H), the pill's
+// "go dark" button, or the tray icon, so the user can go dark the instant a
+// share starts and bring it back with the same gesture. A menu-bar indicator
+// marks the state while it's on.
+fn set_tray_indicator(app: &AppHandle, on: bool) {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        #[cfg(target_os = "macos")]
+        let _ = tray.set_title(Some(if on { "●" } else { "" }));
+        let _ = tray.set_tooltip(Some(if on {
+            "AI Teleprompter — sharing mode: windows hidden (⌘⇧H to show)"
+        } else {
+            "AI Teleprompter"
+        }));
+    }
+}
+
+// The pure decision of what going into / out of sharing mode must do — unit
+// tested without needing a live app: entering pauses tracking and hides every
+// window; leaving brings the prompter back.
+#[derive(Debug, PartialEq, Eq)]
+struct SharingPlan { pause_tracking: bool, hide_all: bool, show_prompter: bool }
+fn sharing_plan(on: bool) -> SharingPlan {
+    if on {
+        SharingPlan { pause_tracking: true, hide_all: true, show_prompter: false }
+    } else {
+        SharingPlan { pause_tracking: false, hide_all: false, show_prompter: true }
+    }
+}
+
+fn apply_sharing_mode(app: &AppHandle, on: bool) {
+    SHARING_MODE.store(on, Ordering::Relaxed);
+    let plan = sharing_plan(on);
+    if plan.pause_tracking {
+        // Returns the prompter to the idle pill and stops the recognizer.
+        let _ = app.emit_to("prompter", "shortcut", "stop");
+    }
+    if plan.hide_all {
+        // Hide every app window so nothing — pill or panel — is on screen.
+        for (_label, w) in app.webview_windows() { let _ = w.hide(); }
+    }
+    if plan.show_prompter {
+        // Resume: bring the prompter back (re-elevate into the notch), re-assert
+        // legacy-capture protection, leave settings hidden.
+        if let Some(w) = get_prompter(app) {
+            let _ = w.show();
+            let mode = app.try_state::<AppState>()
+                .map(|s| s.config.lock().unwrap().mode.clone()).unwrap_or_default();
+            if mode != "classic" { elevate_to_notch_level(&w); }
+            reassert_screenshare(app, "sharing_mode_resume");
+        }
+    }
+    set_tray_indicator(app, on);
+    let _ = app.emit("sharing-mode", on);
+}
+
+#[tauri::command]
+fn set_sharing_mode(app: AppHandle, on: bool) { apply_sharing_mode(&app, on); }
+
+#[tauri::command]
+fn toggle_sharing_mode(app: AppHandle) -> bool {
+    let next = !SHARING_MODE.load(Ordering::Relaxed);
+    apply_sharing_mode(&app, next);
+    next
+}
+
+#[tauri::command]
+fn get_sharing_mode() -> bool { SHARING_MODE.load(Ordering::Relaxed) }
 
 #[tauri::command]
 fn focus_prompter(app: AppHandle) {
@@ -1904,6 +1978,7 @@ pub fn run() {
             open_url, open_settings,
             focus_prompter, elevate_notch_window,
             capture_debug,
+            set_sharing_mode, toggle_sharing_mode, get_sharing_mode,
             start_speech, stop_speech, get_speech_status,
             set_speech_notice, get_speech_notice, save_tracking_fixture,
             ai_complete, ai_test, set_ai_key, has_ai_key,
@@ -2016,7 +2091,15 @@ pub fn run() {
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up, ..
-                } = event { toggle_settings(&app_tray); }
+                } = event {
+                    // While hidden for a screen share, a tray click resumes
+                    // (brings the pill back) rather than opening settings.
+                    if SHARING_MODE.load(Ordering::Relaxed) {
+                        apply_sharing_mode(&app_tray, false);
+                    } else {
+                        toggle_settings(&app_tray);
+                    }
+                }
             });
 
             // Handle Windows tray menu item clicks
@@ -2038,6 +2121,7 @@ pub fn run() {
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::ArrowDown),
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR),
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE),
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH),
             ];
             #[cfg(not(target_os = "windows"))]
             let shortcuts = vec![
@@ -2051,12 +2135,22 @@ pub fn run() {
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyR),
                 Shortcut::new(Some(Modifiers::SUPER   | Modifiers::SHIFT), Code::KeyE),
                 Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyE),
+                Shortcut::new(Some(Modifiers::SUPER   | Modifiers::SHIFT), Code::KeyH),
+                Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyH),
             ];
 
             // Register shortcuts — skip any that are already taken by the OS
             for sc in shortcuts {
                 let _ = app_handle.global_shortcut().on_shortcut(sc, move |app, shortcut, event| {
                     if event.state() != ShortcutState::Pressed { return; }
+                    // Sharing mode is handled Rust-side (hide/show windows), not
+                    // forwarded to the prompter — it must work even when every
+                    // window is hidden, which is exactly the resume case.
+                    if shortcut.key == Code::KeyH {
+                        let next = !SHARING_MODE.load(Ordering::Relaxed);
+                        apply_sharing_mode(app, next);
+                        return;
+                    }
                     let action = match shortcut.key {
                         Code::Space     => "pause",
                         Code::ArrowUp   => "faster",
@@ -2552,5 +2646,35 @@ mod screenshare_tests {
         }"#;
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert!(!cfg.screenshare_hidden);
+    }
+
+    // Sharing mode: entering hides every window and pauses tracking; leaving
+    // brings the prompter back.
+    #[test]
+    fn entering_sharing_mode_hides_and_pauses() {
+        let p = sharing_plan(true);
+        assert!(p.pause_tracking, "entering must pause tracking");
+        assert!(p.hide_all, "entering must hide every window");
+        assert!(!p.show_prompter);
+    }
+
+    #[test]
+    fn leaving_sharing_mode_restores_the_prompter() {
+        let p = sharing_plan(false);
+        assert!(p.show_prompter, "leaving must show the prompter again");
+        assert!(!p.hide_all);
+        assert!(!p.pause_tracking);
+    }
+
+    // The toggle command flips the state (documents the ⌘⇧H / tray behavior).
+    #[test]
+    fn sharing_mode_toggles() {
+        SHARING_MODE.store(false, Ordering::Relaxed);
+        let on = !SHARING_MODE.load(Ordering::Relaxed);
+        SHARING_MODE.store(on, Ordering::Relaxed);
+        assert!(SHARING_MODE.load(Ordering::Relaxed), "toggle from off → on");
+        let off = !SHARING_MODE.load(Ordering::Relaxed);
+        SHARING_MODE.store(off, Ordering::Relaxed);
+        assert!(!SHARING_MODE.load(Ordering::Relaxed), "toggle from on → off");
     }
 }
